@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SmartCart v2</title>
+    <title>SmartCart v3.5</title>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -11,185 +11,322 @@
         margin: 0;
         background: #f6f7f9;
         color: #1a1a1a;
+        height: 100vh;
+        overflow: hidden;
       }
       header {
-        padding: 24px 32px;
+        padding: 14px 24px;
         background: #fff;
         border-bottom: 1px solid #e5e7eb;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
       }
-      header h1 { margin: 0; font-size: 20px; font-weight: 600; }
-      header p { margin: 4px 0 0; color: #6b7280; font-size: 13px; }
-      main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
-      .composer { display: flex; gap: 8px; margin-bottom: 24px; }
-      .composer input {
-        flex: 1; padding: 12px 14px;
-        border: 1px solid #d1d5db; border-radius: 8px;
-        font-size: 15px; background: #fff;
+      header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+      header .reset {
+        font-size: 12px; padding: 6px 12px; background: #fff;
+        border: 1px solid #d1d5db; border-radius: 6px;
+        cursor: pointer; color: #6b7280;
       }
-      .composer input:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
-      .composer button {
-        padding: 12px 20px; background: #111827; color: #fff;
-        border: none; border-radius: 8px; font-size: 14px;
-        font-weight: 500; cursor: pointer;
-      }
-      .composer button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
-      .examples button {
-        padding: 6px 12px; background: #fff;
-        border: 1px solid #d1d5db; border-radius: 999px;
-        font-size: 12px; cursor: pointer; color: #374151;
-      }
-      .examples button:hover { background: #f3f4f6; }
+      header .reset:hover { background: #f3f4f6; }
 
-      .section { margin-bottom: 24px; }
-      .section-head {
-        display: flex; align-items: baseline; justify-content: space-between;
-        margin-bottom: 10px;
+      main {
+        display: grid;
+        grid-template-columns: 420px 1fr;
+        height: calc(100vh - 49px);
       }
-      .section-head h2 {
-        margin: 0; font-size: 14px; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 0.05em;
-        color: #111827;
+      #chat {
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid #e5e7eb;
+        background: #fff;
       }
-      .section-head .sub { font-size: 12px; color: #6b7280; }
+      #log {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .msg {
+        max-width: 85%;
+        padding: 10px 14px;
+        border-radius: 14px;
+        margin-bottom: 8px;
+        font-size: 14px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .msg.user {
+        background: #2563eb; color: #fff; margin-left: auto;
+        border-bottom-right-radius: 4px;
+      }
+      .msg.assistant {
+        background: #f3f4f6; color: #111827;
+        border-bottom-left-radius: 4px;
+      }
+      .msg.system {
+        background: #fef3c7; color: #92400e;
+        font-size: 12px; padding: 8px 12px;
+        margin: 0 auto 8px; max-width: 90%; text-align: center;
+      }
+      .questions {
+        display: flex; flex-wrap: wrap; gap: 6px;
+        margin: 6px 0 12px;
+      }
+      .questions button {
+        font-size: 12px; padding: 6px 10px;
+        border: 1px solid #d1d5db; background: #fff;
+        border-radius: 999px; cursor: pointer; color: #374151;
+      }
+      .questions button:hover { background: #f3f4f6; }
+
+      #composer {
+        display: flex; gap: 8px; padding: 12px;
+        border-top: 1px solid #e5e7eb;
+      }
+      #composer input {
+        flex: 1; padding: 10px 14px; font-size: 14px;
+        border: 1px solid #d1d5db; border-radius: 8px;
+      }
+      #composer input:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
+      #composer button {
+        padding: 10px 16px; background: #111827;
+        color: #fff; border: none; border-radius: 8px;
+        font-size: 14px; cursor: pointer;
+      }
+      #composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+      #suggestions {
+        padding: 0 12px 8px;
+        display: flex; flex-wrap: wrap; gap: 6px;
+        border-top: 1px solid #f3f4f6;
+        padding-top: 8px;
+      }
+      #suggestions button {
+        font-size: 11px; padding: 4px 9px;
+        border: 1px solid #e5e7eb; background: #fff;
+        border-radius: 999px; cursor: pointer; color: #6b7280;
+      }
+      #suggestions button:hover { background: #f3f4f6; color: #111827; }
+
+      #panel {
+        overflow-y: auto;
+        padding: 16px 20px;
+      }
+      #panel.empty {
+        display: flex; align-items: center; justify-content: center;
+        color: #9ca3af; font-size: 13px;
+      }
+      .meta-bar {
+        background: #fff; border: 1px solid #e5e7eb;
+        border-radius: 8px; padding: 12px 14px;
+        font-size: 12px; margin-bottom: 14px; color: #374151;
+      }
+      .meta-bar strong { color: #111827; }
       .badge {
         display: inline-block; padding: 2px 8px;
         font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
         background: #f3f4f6; border-radius: 999px; color: #374151;
-        margin-left: 8px; font-weight: 500;
+        margin-left: 6px;
       }
-      .badge.pass { background: #d1fae5; color: #065f46; }
+      .badge.ready { background: #d1fae5; color: #065f46; }
       .badge.partial { background: #fef3c7; color: #92400e; }
       .badge.fail { background: #fee2e2; color: #991b1b; }
+      .badge.path-exact_product { background: #dbeafe; color: #1e3a8a; }
+      .badge.path-brand { background: #ede9fe; color: #5b21b6; }
+      .badge.path-subcategory { background: #d1fae5; color: #065f46; }
+      .badge.path-category { background: #fef3c7; color: #92400e; }
+      .badge.path-synonym { background: #fce7f3; color: #831843; }
+      .badge.path-embedding { background: #fed7aa; color: #7c2d12; }
+      .badge.path-none { background: #fee2e2; color: #991b1b; }
+
+      .section { margin-bottom: 16px; }
+      .section-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .section-head h2 {
+        margin: 0; font-size: 12px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.05em;
+        color: #111827;
+      }
+      .section-head .sub { font-size: 11px; color: #6b7280; }
 
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 10px;
       }
       .card {
         background: #fff;
         border: 1px solid #e5e7eb;
         border-radius: 8px;
-        padding: 12px;
+        padding: 10px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
       }
       .card.premium { border-style: dashed; background: #fafaf9; }
+      .card.substituted { border-color: #fde68a; background: #fffbeb; }
       .card img {
         width: 100%; aspect-ratio: 1;
         object-fit: contain; background: #f9fafb;
-        border-radius: 6px;
+        border-radius: 4px;
       }
       .req {
-        font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+        font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em;
         color: #2563eb; font-weight: 600;
       }
-      .name { font-size: 13px; line-height: 1.3; font-weight: 500; min-height: 2.6em; }
+      .name { font-size: 12px; line-height: 1.3; font-weight: 500; min-height: 2.4em; }
       .row { display: flex; justify-content: space-between; align-items: baseline;
-             font-size: 12px; color: #6b7280; }
-      .price { font-weight: 600; color: #111827; font-size: 14px; }
-      .meta-line { font-size: 11px; color: #9ca3af; }
-      .empty {
-        background: #fff; border: 1px solid #e5e7eb;
-        border-radius: 8px; padding: 16px; text-align: center;
-        color: #6b7280; font-size: 13px;
+             font-size: 11px; color: #6b7280; }
+      .price { font-weight: 600; color: #111827; font-size: 13px; }
+      .meta-line { font-size: 10px; color: #9ca3af; }
+      .sub-note {
+        font-size: 10px; color: #92400e; font-style: italic;
+        background: #fef3c7; padding: 2px 6px; border-radius: 4px;
       }
-      .err {
-        background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
-        padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;
-      }
-      .warn {
-        background: #fef3c7; border: 1px solid #fde68a; color: #92400e;
-        padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px;
-      }
-      .meta {
-        background: #fff; border: 1px solid #e5e7eb;
-        border-radius: 8px; padding: 14px 16px;
-        font-size: 13px; margin-bottom: 16px; color: #374151;
-      }
-      .meta strong { color: #111827; }
-      .meta details { margin-top: 8px; }
-      .meta summary { cursor: pointer; color: #6b7280; font-size: 12px; }
-      .meta pre {
+      details { font-size: 12px; }
+      details summary { cursor: pointer; color: #6b7280; }
+      details pre {
         background: #f9fafb; border: 1px solid #e5e7eb;
-        padding: 10px; border-radius: 6px; font-size: 11px;
-        overflow-x: auto; margin: 8px 0 0;
+        padding: 10px; border-radius: 6px; font-size: 10px;
+        overflow-x: auto;
       }
-      .loading {
-        display: inline-block; width: 14px; height: 14px;
-        border: 2px solid #d1d5db; border-top-color: #111827;
-        border-radius: 50%; animation: spin 0.7s linear infinite;
-        vertical-align: middle;
+      .typing {
+        display: inline-block; width: 28px;
       }
-      @keyframes spin { to { transform: rotate(360deg); } }
+      .typing span {
+        display: inline-block; width: 5px; height: 5px;
+        background: #9ca3af; border-radius: 50%;
+        margin-right: 2px;
+        animation: blink 1.2s infinite ease-in-out;
+      }
+      .typing span:nth-child(2) { animation-delay: 0.2s; }
+      .typing span:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
     </style>
   </head>
   <body>
     <header>
-      <h1>SmartCart v2</h1>
-      <p>Mission-oriented shopping. Tell it what you're trying to do.</p>
+      <h1>SmartCart v3.5</h1>
+      <button class="reset" id="reset" title="Start a new session">New chat</button>
     </header>
     <main>
-      <form class="composer" id="composer">
-        <input id="q" type="text" placeholder="e.g. Pav bhaji, Tea party, Movie night" autocomplete="off" required />
-        <button id="go" type="submit">Plan cart</button>
-      </form>
-      <div class="examples">
-        <button data-q="Tea party">Tea party</button>
-        <button data-q="Pav bhaji">Pav bhaji</button>
-        <button data-q="Movie night snacks for 5">Movie night</button>
-        <button data-q="Baby food and diapers">Baby food &amp; diapers</button>
-        <button data-q="Healthy breakfast for 2">Healthy breakfast</button>
-        <button data-q="Maggi for hostel night">Maggi</button>
-        <button data-q="Birthday party for kids">Birthday party</button>
-      </div>
-      <div id="status"></div>
-      <div id="meta"></div>
-      <div id="cart"></div>
+      <section id="chat">
+        <div id="log"></div>
+        <div id="suggestions">
+          <button data-q="Maggi">Maggi</button>
+          <button data-q="Lemon">Lemon</button>
+          <button data-q="Amul">Amul</button>
+          <button data-q="Baby Food">Baby Food</button>
+          <button data-q="Tea Party">Tea Party</button>
+          <button data-q="Pav Bhaji">Pav Bhaji</button>
+          <button data-q="Movie Night">Movie Night</button>
+        </div>
+        <form id="composer">
+          <input id="msg" type="text" placeholder="What are you shopping for?" autocomplete="off" autofocus />
+          <button id="send" type="submit">Send</button>
+        </form>
+      </section>
+      <section id="panel" class="empty">
+        <span>Ask for a product, dish, or occasion to see the cart.</span>
+      </section>
     </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const composer = $("composer");
-      const input = $("q");
-      const btn = $("go");
-      const cartEl = $("cart");
-      const metaEl = $("meta");
-      const statusEl = $("status");
+      const log = $("log"), msgInput = $("msg"), sendBtn = $("send");
+      const composer = $("composer"), panel = $("panel"), resetBtn = $("reset");
 
       const escape = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-      async function run(query) {
-        cartEl.innerHTML = "";
-        metaEl.innerHTML = "";
-        statusEl.innerHTML = '<div class="meta"><span class="loading"></span> &nbsp;Routing intent → resolving requirements → composing cart…</div>';
-        btn.disabled = true;
+      let sessionId = sessionStorage.getItem("sid") || "";
+
+      function appendMsg(role, content) {
+        const div = document.createElement("div");
+        div.className = "msg " + role;
+        div.textContent = content;
+        log.appendChild(div);
+        log.scrollTop = log.scrollHeight;
+        return div;
+      }
+
+      function appendQuestions(qs) {
+        if (!qs || qs.length === 0) return;
+        const wrap = document.createElement("div");
+        wrap.className = "questions";
+        for (const q of qs) {
+          const b = document.createElement("button");
+          b.textContent = q;
+          b.onclick = () => { msgInput.value = q; msgInput.focus(); };
+          wrap.appendChild(b);
+        }
+        log.appendChild(wrap);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function appendTyping() {
+        const div = document.createElement("div");
+        div.className = "msg assistant";
+        div.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+        log.appendChild(div);
+        log.scrollTop = log.scrollHeight;
+        return div;
+      }
+
+      async function send(text) {
+        if (!text) return;
+        appendMsg("user", text);
+        msgInput.value = "";
+        sendBtn.disabled = true;
+        const typing = appendTyping();
+
         try {
-          const res = await fetch("/api/cart", {
+          const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ query }),
+            body: JSON.stringify({ sessionId, message: text }),
           });
           const data = await res.json();
-          statusEl.innerHTML = "";
+          typing.remove();
+
           if (!res.ok) {
-            statusEl.innerHTML = `<div class="err">${escape(data.error || "Request failed")}</div>`;
+            appendMsg("system", data.error || "Request failed");
             return;
           }
-          render(data);
+
+          if (data.sessionId) {
+            sessionId = data.sessionId;
+            sessionStorage.setItem("sid", sessionId);
+          }
+
+          appendMsg("assistant", data.reply);
+          if (data.questions && data.questions.length) {
+            appendQuestions(data.questions);
+          }
+
+          if (data.cart) {
+            renderCart(data);
+          } else if (data.status === "needs_user_input") {
+            // partial — show whatever we have plus the warning
+            renderCart(data);
+          }
         } catch (e) {
-          statusEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+          typing.remove();
+          appendMsg("system", e.message || "Network error");
         } finally {
-          btn.disabled = false;
+          sendBtn.disabled = false;
+          msgInput.focus();
         }
       }
 
       function card(p, klass = "") {
+        const subFor = p.substituteFor
+          ? `<div class="sub-note">substitute for ${escape(p.substituteFor)}</div>`
+          : "";
         return `
-          <div class="card ${klass}">
+          <div class="card ${klass} ${p.substituteFor ? "substituted" : ""}">
             <img src="${escape(p.image)}" alt="${escape(p.name)}" loading="lazy" onerror="this.style.visibility='hidden'" />
             <div class="req">${escape(p.requirement)}</div>
             <div class="name">${escape(p.name)}</div>
@@ -197,88 +334,95 @@
               <span class="price">₹${escape(p.price)}</span>
               <span>${escape(p.quantity)}</span>
             </div>
-            <div class="meta-line">${escape(p.subCategory)} · ${escape(p.resolverPath)}</div>
+            <div class="meta-line">${escape(p.brand || "—")} · ${escape(p.subCategory)}</div>
+            ${subFor}
+            <span class="badge path-${escape(p.resolverPath)}">${escape(p.resolverPath)}</span>
           </div>
         `;
       }
 
-      function render(data) {
+      function renderCart(data) {
+        panel.classList.remove("empty");
+        const cart = data.cart || { essentials: [], recommended: [], premiumSuggestions: [] };
         const t = data.trace || {};
         const cov = data.coverage || {};
-        const cart = data.cart || {};
 
-        const validationBadge =
-          t.validation === "pass" ? `<span class="badge pass">pass</span>` :
-          t.validation === "partial" ? `<span class="badge partial">partial</span>` :
-          `<span class="badge fail">fail</span>`;
+        const statusBadge =
+          data.status === "ready" ? `<span class="badge ready">ready</span>` :
+          data.status === "needs_user_input" ? `<span class="badge fail">needs input</span>` :
+          `<span class="badge partial">${escape(data.status)}</span>`;
 
-        const intentBits = [
-          `<strong>Intent:</strong> ${escape(t.intentType || "?")}`,
-          t.mission ? `<strong>Plan:</strong> ${escape(t.mission)}` : "",
-          `<strong>Coverage:</strong> ${(t.coverage * 100).toFixed(0)}% (${cov.fulfilledEssentials}/${cov.totalEssentials})`,
-        ].filter(Boolean).join(" &nbsp;·&nbsp; ");
-
-        let warn = "";
-        if (t.validation !== "pass" && (t.unfulfilled || []).length) {
-          warn = `<div class="warn"><strong>Unfulfilled essentials:</strong> ${t.unfulfilled.map(escape).join(", ")} — these aren't available in the catalog or didn't match.</div>`;
-        } else if (t.retried) {
-          warn = `<div class="warn">Initial coverage was below threshold; retried with broader resolver and recovered.</div>`;
-        }
-
-        metaEl.innerHTML = `
-          ${warn}
-          <div class="meta">
-            <div>${intentBits} ${validationBadge}</div>
-            <details>
+        const meta = `
+          <div class="meta-bar">
+            <div>
+              <strong>Type:</strong> ${escape(t.queryType || "?")}
+              ${t.missionSlug ? `&nbsp;·&nbsp; <strong>Plan:</strong> ${escape(t.missionSlug)}` : ""}
+              ${cov.coverage !== undefined ? `&nbsp;·&nbsp; <strong>Coverage:</strong> ${(cov.coverage * 100).toFixed(0)}%` : ""}
+              ${statusBadge}
+            </div>
+            ${t.unfulfilled && t.unfulfilled.length ? `<div style="margin-top:6px;color:#92400e;"><strong>Unfulfilled:</strong> ${t.unfulfilled.map(escape).join(", ")}</div>` : ""}
+            ${t.substitutions && t.substitutions.length ? `<div style="margin-top:4px;font-size:11px;color:#92400e;">${t.substitutions.map(s => `${escape(s.requirement)} → ${escape(s.picks[0]?.name || "")}`).join(" · ")}</div>` : ""}
+            <details style="margin-top:8px;">
               <summary>Debug trace</summary>
               <pre>${escape(JSON.stringify({
-                intentType: t.intentType,
-                mission: t.mission,
-                kbSource: t.kbSource,
-                resolvedCategories: t.resolvedCategories,
+                queryType: t.queryType,
+                classifierConfidence: t.classifierConfidence,
+                plannerStatus: t.plannerStatus,
+                plannerConfidence: t.plannerConfidence,
+                aliasFastPath: t.aliasFastPath,
+                resolverSteps: t.resolverSteps,
+                coverage: t.coverage,
+                unfulfilled: t.unfulfilled,
+                substitutions: t.substitutions,
                 retrievedProducts: t.retrievedProducts,
                 selectedProducts: t.selectedProducts,
-                coverage: t.coverage,
-                validation: t.validation,
-                retried: t.retried,
-                unfulfilled: t.unfulfilled,
                 notes: t.notes,
-                requirements: t.requirements,
               }, null, 2))}</pre>
             </details>
           </div>
         `;
 
         const sections = [
-          { key: "essentials", title: "Essentials", sub: "all auto-added", items: cart.essentials || [], klass: "" },
-          { key: "recommended", title: "Recommended", sub: "top 2 auto-added", items: cart.recommended || [], klass: "" },
-          { key: "premium", title: "Premium suggestions", sub: "optional · not added to cart", items: cart.premiumSuggestions || [], klass: "premium" },
+          { title: "Essentials", sub: "all auto-added", items: cart.essentials, klass: "" },
+          { title: "Recommended", sub: "top 2 auto-added", items: cart.recommended, klass: "" },
+          { title: "Premium suggestions", sub: "optional · not added", items: cart.premiumSuggestions, klass: "premium" },
         ];
 
-        cartEl.innerHTML = sections.map((s) => `
+        const sectionsHtml = sections.map((s) => `
           <div class="section">
             <div class="section-head">
               <h2>${escape(s.title)}</h2>
-              <span class="sub">${escape(s.sub)} · ${s.items.length} item${s.items.length === 1 ? "" : "s"}</span>
+              <span class="sub">${escape(s.sub)} · ${s.items.length}</span>
             </div>
             ${s.items.length === 0
-              ? `<div class="empty">${s.key === "essentials" ? "No essentials resolved." : "—"}</div>`
+              ? `<div class="meta-bar" style="font-size:11px;color:#9ca3af;text-align:center;">—</div>`
               : `<div class="grid">${s.items.map((p) => card(p, s.klass)).join("")}</div>`}
           </div>
         `).join("");
+
+        panel.innerHTML = meta + sectionsHtml;
       }
 
       composer.addEventListener("submit", (e) => {
         e.preventDefault();
-        const q = input.value.trim();
-        if (q) run(q);
+        send(msgInput.value.trim());
       });
-
-      document.querySelectorAll(".examples button").forEach((b) => {
-        b.addEventListener("click", () => {
-          input.value = b.dataset.q;
-          run(b.dataset.q);
-        });
+      document.querySelectorAll("#suggestions button").forEach((b) => {
+        b.addEventListener("click", () => send(b.dataset.q));
+      });
+      resetBtn.addEventListener("click", async () => {
+        if (sessionId) {
+          await fetch("/api/session/reset", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ sessionId }),
+          });
+        }
+        sessionStorage.removeItem("sid");
+        sessionId = "";
+        log.innerHTML = "";
+        panel.className = "empty";
+        panel.innerHTML = "<span>Ask for a product, dish, or occasion to see the cart.</span>";
       });
     </script>
   </body>

@@ -12,9 +12,10 @@
     "seed:categories": "tsx src/scripts/seedCategories.ts",
     "seed:missions": "tsx src/scripts/seedMissions.ts",
     "embed:products": "tsx src/scripts/embedProducts.ts",
+    "extract:brands": "tsx src/scripts/extractBrands.ts",
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "test:e2e": "tsx src/scripts/testE2E.ts"
+    "eval": "tsx src/scripts/eval.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1068.0",

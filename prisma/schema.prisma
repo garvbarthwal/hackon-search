@@ -19,6 +19,7 @@ model Product {
   quantity      String
   subCategory   String
   category      String
+  brand         String?
   inStock       Boolean  @default(true)
   syntheticText String?
   // embedding vector(768) — managed via raw SQL
@@ -26,6 +27,7 @@ model Product {
 
   @@index([subCategory])
   @@index([category])
+  @@index([brand])
 }
 
 /// Sub-category vocabulary with semantic descriptions and embeddings.
@@ -41,10 +43,10 @@ model SubCategory {
   @@index([category])
 }
 
-/// Mission / Dish knowledge base. v2 source of truth for "what does this query need?"
+/// Mission / Dish knowledge base. Source of truth for "what does this query need?"
 /// type: "mission" (movie_night, tea_party) or "dish" (pav_bhaji, biryani).
 /// aliases: free-form phrases that resolve to this entry ("movie night", "movie snacks").
-/// essentials/recommended/premium: jsonb arrays of { name, hints? }.
+/// essentials/recommended/premium: jsonb arrays of Requirement.
 model MissionKB {
   slug           String   @id
   type           String
@@ -57,4 +59,30 @@ model MissionKB {
 
   @@index([type])
   @@map("MissionKB")
+}
+
+/// Per-query requirement cache. 30-day TTL enforced at read time
+/// via `createdAt + 30 days < now()`. Keyed by normalized query + queryType.
+model RequirementCache {
+  id          Int      @id @default(autoincrement())
+  query       String
+  queryType   String
+  payload     Json     // PlannerOutput
+  createdAt   DateTime @default(now())
+
+  @@unique([query, queryType])
+  @@index([createdAt])
+}
+
+/// Brand aggregate stats. Computed once after Brand extraction;
+/// used in ranking to bias toward strong brands.
+model Brand {
+  name         String   @id
+  productCount Int
+  avgRating    Float
+  totalReviews Int
+  brandScore   Float    // pre-computed normalized score in 0..1
+  createdAt    DateTime @default(now())
+
+  @@index([brandScore])
 }

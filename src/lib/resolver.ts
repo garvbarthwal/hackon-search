@@ -1,10 +1,30 @@
+/**
+ * v3.5 Resolver Chain.
+ *
+ * Strict retrieval priority — embeddings NEVER override exact matches:
+ *   1. Exact Product Match     (req.type=exact_product or strong nameMatch hit)
+ *   2. Brand Match             (req.type=brand, or product whose brand matches)
+ *   3. Exact SubCategory Match (req.hints intersect Product.subCategory)
+ *   4. Exact Category Match    (synthesized from sub-cats — broader fallback)
+ *   5. Synonym Match           (pg_trgm on sub-category name)
+ *   6. Embedding Search        (last resort)
+ *
+ * Ranking formula (v3.5 spec):
+ *   score = 0.30 * rating + 0.25 * reviews + 0.20 * popularity + 0.25 * brandScore
+ *   PLUS a bonus for exact product/brand matches.
+ */
 import { prisma } from "./db.js";
 import { embedOne, toPgVector } from "./gemini.js";
-import type { Requirement } from "./router.js";
+import type { Requirement } from "./planner.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
+export type ResolverPath =
+  | "exact_product"
+  | "brand"
+  | "subcategory"
+  | "category"
+  | "synonym"
+  | "embedding"
+  | "none";
 
 export type RankedProduct = {
   id: string;
@@ -16,18 +36,12 @@ export type RankedProduct = {
   quantity: string;
   subCategory: string;
   category: string;
+  brand: string | null;
   inStock: boolean;
   score: number;
   resolverPath: ResolverPath;
+  matchBonus: number;
 };
-
-export type ResolverPath =
-  | "exact_subcategory"
-  | "exact_category"
-  | "trigram_subcategory"
-  | "name_match"
-  | "embedding_fallback"
-  | "none";
 
 export type ResolvedRequirement = {
   requirement: Requirement;
@@ -35,9 +49,7 @@ export type ResolvedRequirement = {
   resolverPath: ResolverPath;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Ranking — v2 spec: 0.40 rating + 0.35 review + 0.25 popularity
-// ─────────────────────────────────────────────────────────────────────────────
+const TOP_CANDIDATES = 8;
 
 type RawProduct = {
   id: string;
@@ -49,176 +61,327 @@ type RawProduct = {
   quantity: string;
   subCategory: string;
   category: string;
+  brand: string | null;
   inStock: boolean;
 };
 
-function rankProducts(products: RawProduct[], path: ResolverPath): RankedProduct[] {
+// ─────────────────────────────────────────────────────────────────────────────
+// Ranking
+// ─────────────────────────────────────────────────────────────────────────────
+
+let brandScoreCache: Map<string, number> | null = null;
+let brandScoreCachedAt = 0;
+const BRAND_CACHE_TTL_MS = 60_000;
+
+async function getBrandScores(): Promise<Map<string, number>> {
+  if (brandScoreCache && Date.now() - brandScoreCachedAt < BRAND_CACHE_TTL_MS) {
+    return brandScoreCache;
+  }
+  const rows = await prisma.brand.findMany({ select: { name: true, brandScore: true } });
+  const m = new Map<string, number>();
+  for (const r of rows) m.set(r.name, r.brandScore);
+  brandScoreCache = m;
+  brandScoreCachedAt = Date.now();
+  return m;
+}
+
+async function rankProducts(
+  products: RawProduct[],
+  path: ResolverPath,
+  matchBonusFn: (p: RawProduct) => number = () => 0,
+): Promise<RankedProduct[]> {
   if (products.length === 0) return [];
+  const brandScores = await getBrandScores();
   const maxReviews = Math.max(...products.map((p) => p.reviews), 1);
-  // Popularity proxy = log-percentile of reviews (skewed distribution).
-  const logMaxReviews = Math.log1p(maxReviews);
+  const logMax = Math.log1p(maxReviews);
 
   return products
     .map((p) => {
-      const ratingScore = Math.max(0, Math.min(1, p.rating / 5));
-      const reviewScore = Math.log1p(p.reviews) / logMaxReviews;
-      const popularityScore = reviewScore; // same signal as review pct here; keeps formula honest
-      const score = 0.4 * ratingScore + 0.35 * reviewScore + 0.25 * popularityScore;
-      return { ...p, score, resolverPath: path };
+      const rating = Math.max(0, Math.min(1, p.rating / 5));
+      const review = Math.log1p(p.reviews) / logMax;
+      const popularity = review;
+      const brandScore = p.brand ? (brandScores.get(p.brand) ?? 0) : 0;
+      const base =
+        0.3 * rating + 0.25 * review + 0.2 * popularity + 0.25 * brandScore;
+      const bonus = matchBonusFn(p);
+      return { ...p, score: base + bonus, resolverPath: path, matchBonus: bonus };
     })
     .sort((a, b) => b.score - a.score);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Resolver chain — for ONE requirement
+// Per-tier search
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOP_CANDIDATES = 8;
-
-export async function resolveRequirement(
-  req: Requirement,
-): Promise<ResolvedRequirement> {
-  const hasName = !!(req.nameMatch && req.nameMatch.length > 0);
-  const hasHints = !!(req.hints && req.hints.length > 0);
-
-  // Step 1: hints + nameMatch (most specific).
-  if (hasHints) {
-    const where: Record<string, unknown> = {
-      subCategory: { in: req.hints },
+async function searchExactProduct(req: Requirement): Promise<RankedProduct[]> {
+  const keywords = req.nameMatch ?? [];
+  if (keywords.length === 0) return [];
+  const products = await prisma.product.findMany({
+    where: {
       inStock: true,
-    };
-    if (hasName) {
-      where.OR = req.nameMatch!.map((kw) => ({
-        name: { contains: kw, mode: "insensitive" },
-      }));
+      OR: keywords.map((kw) => ({ name: { contains: kw, mode: "insensitive" as const } })),
+    },
+    take: 100,
+  });
+
+  // Diaper hard filter (carry over from v2 — never substitute adult diapers).
+  const filtered = req.name.toLowerCase().includes("diaper")
+    ? products.filter((p) => !/adult|elderly|incontinence/i.test(p.name))
+    : products;
+
+  if (filtered.length === 0) return [];
+
+  // Match-bonus: full-keyword hit at start of name beats mid-name hit.
+  const bonus = (p: RawProduct): number => {
+    const n = p.name.toLowerCase();
+    let b = 0;
+    for (const kw of keywords) {
+      const k = kw.toLowerCase();
+      if (n.startsWith(k)) b += 0.25;
+      else if (n.includes(k)) b += 0.1;
     }
-    const products = await prisma.product.findMany({ where, take: 100 });
-    if (products.length > 0) {
-      return {
-        requirement: req,
-        candidates: rankProducts(products, "exact_subcategory").slice(0, TOP_CANDIDATES),
-        resolverPath: "exact_subcategory",
-      };
-    }
-    // Hints were given but found nothing — even with name relaxation. Don't drift
-    // outside the named neighborhood (that's how "Lemon" became "Detergent").
-    // Caller can call resolveBroader if it wants to widen.
-    return { requirement: req, candidates: [], resolverPath: "none" };
+    return b;
+  };
+
+  return rankProducts(filtered, "exact_product", bonus);
+}
+
+async function searchBrand(brand: string): Promise<RankedProduct[]> {
+  // Exact brand match first.
+  const exact = await prisma.product.findMany({
+    where: { brand: { equals: brand, mode: "insensitive" }, inStock: true },
+    take: 100,
+  });
+  if (exact.length > 0) {
+    return rankProducts(exact, "brand", () => 0.2);
   }
-
-  // No hints. If only nameMatch is given, do whole-catalog name match.
-  if (hasName) {
-    const products = await prisma.product.findMany({
-      where: {
-        inStock: true,
-        OR: req.nameMatch!.map((kw) => ({
-          name: { contains: kw, mode: "insensitive" },
-        })),
-      },
-      take: 100,
-    });
-    // Diaper hard filter: exclude adult/elderly diapers when looking for "Diapers"
-    // (the v2 spec calls this out as a failure mode in Example 3).
-    let filtered = products;
-    if (req.name.toLowerCase().includes("diaper")) {
-      filtered = products.filter((p) => !/adult|elderly|incontinence/i.test(p.name));
-    }
-    if (filtered.length > 0) {
-      return {
-        requirement: req,
-        candidates: rankProducts(filtered, "name_match").slice(0, TOP_CANDIDATES),
-        resolverPath: "name_match",
-      };
-    }
-    // nameMatch was the only signal and missed — item isn't in the catalog.
-    // Do not fall to embedding (would substitute Ghee for Diapers).
-    return { requirement: req, candidates: [], resolverPath: "none" };
-  }
-
-  // Neither hints nor nameMatch. Use trigram on sub-cat name, then embedding.
-
-  // Step 3: trigram match on sub-category name (synonym-ish).
-  type Row = { name: string };
-  const trigramRows = await prisma.$queryRaw<Row[]>`
-    SELECT name FROM "SubCategory"
-    WHERE name % ${req.name}
-    ORDER BY similarity(name, ${req.name}) DESC
-    LIMIT 3
+  // Trigram match for brand misspellings.
+  type Row = RawProduct;
+  const rows = await prisma.$queryRaw<Row[]>`
+    SELECT id, name, image, price, rating, reviews, quantity,
+           "subCategory", category, brand, "inStock"
+    FROM "Product"
+    WHERE brand IS NOT NULL AND brand % ${brand}
+      AND "inStock" = true
+    ORDER BY similarity(brand, ${brand}) DESC
+    LIMIT 100
   `;
-  if (trigramRows.length > 0) {
-    const subs = trigramRows.map((r) => r.name);
-    const products = await prisma.product.findMany({
-      where: { subCategory: { in: subs }, inStock: true },
-      take: 100,
-    });
-    if (products.length > 0) {
-      return {
-        requirement: req,
-        candidates: rankProducts(products, "trigram_subcategory").slice(0, TOP_CANDIDATES),
-        resolverPath: "trigram_subcategory",
-      };
-    }
-  }
+  if (rows.length > 0) return rankProducts(rows, "brand", () => 0.1);
+  return [];
+}
 
-  // Step 4: embedding fallback — vector search on Product.embedding.
-  // This relies on the embedded synthetic text. If embeddings haven't been
-  // generated yet, this path returns nothing and we fall through to "none".
+async function searchSubcategory(hints: string[]): Promise<RankedProduct[]> {
+  if (hints.length === 0) return [];
+  const products = await prisma.product.findMany({
+    where: { subCategory: { in: hints }, inStock: true },
+    take: 200,
+  });
+  if (products.length === 0) return [];
+  return rankProducts(products, "subcategory");
+}
+
+async function searchCategory(hints: string[]): Promise<RankedProduct[]> {
+  if (hints.length === 0) return [];
+  // Find parent categories of the hinted sub-categories, then broaden.
+  const subs = await prisma.subCategory.findMany({
+    where: { name: { in: hints } },
+    select: { category: true },
+  });
+  const cats = [...new Set(subs.map((s) => s.category))];
+  if (cats.length === 0) return [];
+  const products = await prisma.product.findMany({
+    where: { category: { in: cats }, inStock: true },
+    take: 200,
+  });
+  if (products.length === 0) return [];
+  return rankProducts(products, "category");
+}
+
+async function searchSynonym(req: Requirement): Promise<RankedProduct[]> {
+  const target = req.name;
+  type Row = { name: string };
+  const rows = await prisma.$queryRaw<Row[]>`
+    SELECT name FROM "SubCategory"
+    WHERE name % ${target}
+    ORDER BY similarity(name, ${target}) DESC
+    LIMIT 5
+  `;
+  if (rows.length === 0) return [];
+  const products = await prisma.product.findMany({
+    where: { subCategory: { in: rows.map((r) => r.name) }, inStock: true },
+    take: 100,
+  });
+  if (products.length === 0) return [];
+  return rankProducts(products, "synonym");
+}
+
+async function searchEmbedding(req: Requirement): Promise<RankedProduct[]> {
   try {
-    const queryText = [req.name, ...(req.hints ?? []), ...(req.nameMatch ?? [])]
+    const text = [req.name, ...(req.hints ?? []), ...(req.nameMatch ?? [])]
       .filter(Boolean)
       .join(". ");
-    const vec = await embedOne(queryText);
-    const vecLit = toPgVector(vec);
-    type VecRow = RawProduct & { distance: number };
-    const rows = await prisma.$queryRawUnsafe<VecRow[]>(
+    const vec = await embedOne(text);
+    const lit = toPgVector(vec);
+    type Row = RawProduct & { distance: number };
+    const rows = await prisma.$queryRawUnsafe<Row[]>(
       `
       SELECT id, name, image, price, rating, reviews, quantity,
-             "subCategory", category, "inStock",
+             "subCategory", category, brand, "inStock",
              (embedding <=> $1::vector) AS distance
       FROM "Product"
       WHERE embedding IS NOT NULL AND "inStock" = true
       ORDER BY embedding <=> $1::vector
       LIMIT 25
       `,
-      vecLit,
+      lit,
     );
-    if (rows.length > 0) {
+    if (rows.length > 0) return rankProducts(rows, "embedding");
+  } catch {
+    // embedding quota / unavailable
+  }
+  return [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a single requirement using the strict tier order.
+ * The first tier that returns ANY products wins. Lower tiers are not consulted.
+ */
+export async function resolveRequirement(req: Requirement): Promise<ResolvedRequirement> {
+  // Tier 1: exact_product — only when nameMatch is given AND type is exact_product or name.
+  if (
+    (req.type === "exact_product" || req.type === "name" || req.type === "ingredient") &&
+    req.nameMatch &&
+    req.nameMatch.length > 0
+  ) {
+    // For exact_product, prefer hint-bounded match first (sub-cat AND name).
+    if (req.hints && req.hints.length > 0) {
+      const products = await prisma.product.findMany({
+        where: {
+          inStock: true,
+          subCategory: { in: req.hints },
+          OR: req.nameMatch.map((kw) => ({
+            name: { contains: kw, mode: "insensitive" as const },
+          })),
+        },
+        take: 100,
+      });
+      const filtered = req.name.toLowerCase().includes("diaper")
+        ? products.filter((p) => !/adult|elderly|incontinence/i.test(p.name))
+        : products;
+      if (filtered.length > 0) {
+        const ranked = await rankProducts(filtered, "exact_product", (p) => {
+          const n = p.name.toLowerCase();
+          let b = 0.15;
+          for (const kw of req.nameMatch!) {
+            if (n.startsWith(kw.toLowerCase())) b += 0.2;
+          }
+          return b;
+        });
+        return {
+          requirement: req,
+          candidates: ranked.slice(0, TOP_CANDIDATES),
+          resolverPath: "exact_product",
+        };
+      }
+    }
+
+    // Whole-catalog name match.
+    const exact = await searchExactProduct(req);
+    if (exact.length > 0) {
       return {
         requirement: req,
-        candidates: rankProducts(rows, "embedding_fallback").slice(0, TOP_CANDIDATES),
-        resolverPath: "embedding_fallback",
+        candidates: exact.slice(0, TOP_CANDIDATES),
+        resolverPath: "exact_product",
       };
     }
-  } catch {
-    // Embedding unavailable / quota — fall through.
+
+    // CRITICAL: when nameMatch was specified and missed, do NOT substitute via
+    // category/embedding. Return empty so coverage validator surfaces the gap.
+    // This is the v2/v3 invariant: Atta never replaces Pav, Ghee never replaces Diapers.
+    return { requirement: req, candidates: [], resolverPath: "none" };
+  }
+
+  // Tier 2: brand match.
+  if (req.type === "brand" && req.brand) {
+    const products = await searchBrand(req.brand);
+    if (products.length > 0) {
+      return {
+        requirement: req,
+        candidates: products.slice(0, TOP_CANDIDATES),
+        resolverPath: "brand",
+      };
+    }
+    // Even on miss, don't fall through — brand was the user's specific ask.
+    return { requirement: req, candidates: [], resolverPath: "none" };
+  }
+
+  // Tier 3: exact sub-category match (hint-driven, no nameMatch).
+  if (req.hints && req.hints.length > 0) {
+    const products = await searchSubcategory(req.hints);
+    if (products.length > 0) {
+      return {
+        requirement: req,
+        candidates: products.slice(0, TOP_CANDIDATES),
+        resolverPath: "subcategory",
+      };
+    }
+
+    // Tier 4: parent category broaden.
+    const cat = await searchCategory(req.hints);
+    if (cat.length > 0) {
+      return {
+        requirement: req,
+        candidates: cat.slice(0, TOP_CANDIDATES),
+        resolverPath: "category",
+      };
+    }
+  }
+
+  // Tier 5: synonym match on sub-category name.
+  const syn = await searchSynonym(req);
+  if (syn.length > 0) {
+    return {
+      requirement: req,
+      candidates: syn.slice(0, TOP_CANDIDATES),
+      resolverPath: "synonym",
+    };
+  }
+
+  // Tier 6: embedding fallback.
+  const emb = await searchEmbedding(req);
+  if (emb.length > 0) {
+    return {
+      requirement: req,
+      candidates: emb.slice(0, TOP_CANDIDATES),
+      resolverPath: "embedding",
+    };
   }
 
   return { requirement: req, candidates: [], resolverPath: "none" };
 }
 
 export async function resolveAll(reqs: Requirement[]): Promise<ResolvedRequirement[]> {
-  // Resolve sequentially to keep DB load predictable; could parallelize if needed.
   const out: ResolvedRequirement[] = [];
   for (const r of reqs) out.push(await resolveRequirement(r));
   return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-resolve with broader fallback for missing essentials
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broaden a requirement that came back empty. We drop nameMatch but KEEP hints
- * so we stay in the right neighborhood — e.g. "Lemon" with hints=Fresh Vegetables
- * will broaden to "any fresh vegetable" but never to detergent.
- *
- * Returns empty if the requirement had no hints to broaden into — in that case
- * there's nothing useful to substitute, and the validator surfaces the gap.
+ * Broaden a requirement that came back empty. Strips nameMatch/brand and uses
+ * hints only. Returns empty if there are no hints to broaden into.
  */
 export async function resolveBroader(req: Requirement): Promise<ResolvedRequirement> {
   if (!req.hints || req.hints.length === 0) {
     return { requirement: req, candidates: [], resolverPath: "none" };
   }
-  const broadened: Requirement = { name: req.name, hints: req.hints };
-  return resolveRequirement(broadened);
+  return resolveRequirement({
+    type: "subcategory",
+    name: req.name,
+    hints: req.hints,
+    priority: req.priority,
+  });
 }

@@ -39,7 +39,9 @@ export async function generateJSON<T>(args: {
     toolSpec: {
       name: "respond",
       description: "Return a structured response matching the required schema.",
-      inputSchema: { json: args.schema },
+      // DocumentType is a recursive union — our schema is a plain JSON object,
+      // safe to pass as-is.
+      inputSchema: { json: args.schema as never },
     },
   };
 

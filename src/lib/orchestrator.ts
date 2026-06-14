@@ -1,156 +1,218 @@
-import {
-  routeIntent,
-  resolveOrGenerateKb,
-  type RouterOutput,
-  type KbEntry,
-  type Requirement,
-} from "./router.js";
+/**
+ * v3.5 Orchestrator.
+ *
+ *   query → classifier → planner (alias fast-path) → resolver → coverage
+ *         → substitution (if coverage >= 0.9) → composer → final cart
+ *
+ * Stateful: takes (sessionId, history, message) and returns the next state of
+ * the conversation. If the planner asks questions, we return early without
+ * resolving — that round-trips through the chat UI.
+ */
+import { classify } from "./classifier.js";
+import { plan, aliasFastPath, type ChatMessage, type PlannerOutput } from "./planner.js";
 import { resolveAll, type ResolvedRequirement } from "./resolver.js";
-import {
-  composeSmartCart,
-  computeCoverage,
-  retryMissing,
-  COVERAGE_THRESHOLD,
-  type SmartCart,
-  type CoverageReport,
-} from "./cart.js";
+import { computeCoverage, type CoverageReport, COVERAGE_THRESHOLD } from "./coverage.js";
+import { substitute, applySubstitutions, type Substitution } from "./substitution.js";
+import { composeSmartCart, type SmartCart } from "./cart.js";
 
-export type DebugTrace = {
-  intentType: string;
-  mission: string | null;
-  kbSource: "static" | "llm_cached" | "llm_generated" | null;
-  requirements: {
-    essentials: Requirement[];
-    recommended: Requirement[];
-    premium: Requirement[];
-  };
-  resolvedCategories: { requirement: string; resolverPath: string }[];
-  retrievedProducts: number;
-  selectedProducts: number;
-  coverage: number;
-  validation: "pass" | "fail" | "partial";
-  retried: boolean;
-  unfulfilled: string[];
-  notes: string[];
-};
-
-export type CartResponse = {
-  query: string;
-  cart: SmartCart;
-  coverage: CoverageReport;
+export type ChatTurnResponse = {
+  sessionId: string;
+  status: "clarifying" | "ready" | "needs_user_input";
+  reply: string;
+  questions: string[];
+  cart?: SmartCart;
+  coverage?: CoverageReport;
   trace: DebugTrace;
 };
 
+export type DebugTrace = {
+  queryType: string;
+  classifierConfidence: number;
+  classifierReasoning: string;
+  plannerStatus: string;
+  plannerConfidence: number;
+  missionSlug: string | null;
+  kbHit: boolean;
+  aliasFastPath: boolean;
+  cachedClassifier: boolean;
+  requirements: PlannerOutput["requirements"] | null;
+  resolverSteps: { requirement: string; resolverPath: string; candidates: number }[];
+  coverage: number | null;
+  unfulfilled: string[];
+  substitutions: { requirement: string; picks: { name: string; reason: string }[] }[];
+  retrievedProducts: number;
+  selectedProducts: number;
+  notes: string[];
+};
+
 /**
- * v2 orchestrator: query → router → KB → resolver → coverage → compose.
- *
- * Behavior on coverage miss:
- *   - First pass uses strict resolver (sub-cat hints + nameMatch keywords).
- *   - If coverage < 0.9, retry missing essentials with a broader resolver
- *     (sub-cat hints only, then embedding fallback).
- *   - If still < 0.9, return a partial cart with `unfulfilled` populated.
+ * One turn of the conversation. `history` excludes the current `message`.
  */
-export async function generateSmartCart(query: string): Promise<CartResponse> {
+export async function processTurn(args: {
+  sessionId: string;
+  history: ChatMessage[];
+  message: string;
+}): Promise<ChatTurnResponse> {
+  const { sessionId, history, message } = args;
   const notes: string[] = [];
-  const router: RouterOutput = await routeIntent(query);
+
+  // ── Stage 1: classify ──────────────────────────────────────────────
+  const cls = await classify(message);
   notes.push(
-    `Router: ${router.intentType}${router.kbSlug ? ` → ${router.kbSlug}` : ""}${router.suggestedSlug ? ` (LLM suggested: ${router.suggestedSlug})` : ""}`,
+    `classifier: ${cls.queryType} (conf=${cls.confidence.toFixed(2)}) — ${cls.reasoning.slice(0, 80)}`,
   );
 
-  // Build requirement set from KB or fallback for category_request / product_search.
-  let kb: KbEntry | null = null;
-  let kbSource: DebugTrace["kbSource"] = null;
+  // ── Stage 2: plan (alias fast-path → LLM planner) ──────────────────
+  let planner: PlannerOutput | null = await aliasFastPath(cls, history, message);
+  let usedAlias = false;
+  if (planner) {
+    usedAlias = true;
+    notes.push(`planner: alias fast-path hit → ${planner.missionSlug}`);
+  } else {
+    planner = await plan(cls, history, message);
+    notes.push(`planner: ${planner.status} (conf=${planner.confidence.toFixed(2)})`);
+  }
 
-  if (router.intentType === "mission" || router.intentType === "dish") {
-    if (router.kbSlug) {
-      kb = await resolveOrGenerateKb(router);
-      kbSource = "static"; // could be llm_cached if generated previously; load doesn't distinguish well
-    } else if (router.suggestedSlug) {
-      kb = await resolveOrGenerateKb(router);
-      kbSource = "llm_generated";
-      if (kb) notes.push(`KB miss — generated and cached entry for slug '${router.suggestedSlug}'`);
+  // If still clarifying, return — no resolution this turn.
+  if (planner.status === "clarifying") {
+    return {
+      sessionId,
+      status: "clarifying",
+      reply: planner.reply,
+      questions: planner.questions,
+      trace: {
+        queryType: cls.queryType,
+        classifierConfidence: cls.confidence,
+        classifierReasoning: cls.reasoning,
+        plannerStatus: planner.status,
+        plannerConfidence: planner.confidence,
+        missionSlug: planner.missionSlug,
+        kbHit: false,
+        aliasFastPath: usedAlias,
+        cachedClassifier: false,
+        requirements: planner.requirements,
+        resolverSteps: [],
+        coverage: null,
+        unfulfilled: [],
+        substitutions: [],
+        retrievedProducts: 0,
+        selectedProducts: 0,
+        notes,
+      },
+    };
+  }
+
+  // ── Stage 3: resolve all requirements ──────────────────────────────
+  const reqs = planner.requirements;
+  const essentialsResolved = await resolveAll(reqs.essentials);
+  const recommendedResolved = await resolveAll(reqs.recommended);
+  const premiumResolved = await resolveAll(reqs.premium);
+
+  // ── Stage 4: coverage ──────────────────────────────────────────────
+  let coverage = computeCoverage(essentialsResolved);
+  notes.push(
+    `coverage: ${(coverage.coverage * 100).toFixed(0)}% (${coverage.fulfilledEssentials}/${coverage.totalEssentials}) → ${coverage.status}`,
+  );
+
+  // ── Stage 5: substitution ──────────────────────────────────────────
+  const substitutions: Substitution[] = [];
+  let augmentedEssentials: ResolvedRequirement[] = essentialsResolved;
+
+  if (coverage.status === "needs_substitution" && coverage.substitutionCandidates.length > 0) {
+    for (const cand of coverage.substitutionCandidates) {
+      const sub = await substitute(cand);
+      if (sub.picks.length > 0) {
+        substitutions.push(sub);
+        notes.push(
+          `substituted ${cand.name} → ${sub.picks.map((p) => p.product.name).join(", ")}`,
+        );
+      }
+    }
+    if (substitutions.length > 0) {
+      augmentedEssentials = applySubstitutions(essentialsResolved, substitutions);
+      coverage = computeCoverage(augmentedEssentials);
     }
   }
 
-  let essentialReqs: Requirement[] = [];
-  let recommendedReqs: Requirement[] = [];
-  let premiumReqs: Requirement[] = [];
+  // ── Stage 6: compose ───────────────────────────────────────────────
+  const essentialSubCats = augmentedEssentials
+    .flatMap((r) => r.candidates.slice(0, 1).map((p) => p.subCategory))
+    .filter(Boolean);
 
-  if (kb) {
-    essentialReqs = kb.essentials;
-    recommendedReqs = kb.recommended;
-    premiumReqs = kb.premium;
-  } else if (router.intentType === "category_request") {
-    // Treat each named category as an essential.
-    essentialReqs = router.requestedCategories.map((c) => ({
-      name: c,
-      hints: [c],
-      nameMatch: [c.toLowerCase()],
-    }));
-    notes.push(`category_request: treating ${router.requestedCategories.length} named categories as essentials`);
-  } else if (router.intentType === "product_search") {
-    // Use the query itself as a name-match requirement.
-    essentialReqs = [{ name: query, nameMatch: [query.toLowerCase()] }];
-    notes.push("product_search: matching by product name");
-  } else {
-    notes.push(`No KB and intent=${router.intentType} — returning empty cart.`);
-  }
+  const cart = composeSmartCart(
+    augmentedEssentials,
+    recommendedResolved,
+    premiumResolved,
+    essentialSubCats,
+  );
 
-  // Resolve all three tiers
-  let essentialsResolved = await resolveAll(essentialReqs);
-  const recommendedResolved = await resolveAll(recommendedReqs);
-  const premiumResolved = await resolveAll(premiumReqs);
-
-  // Coverage check + one retry for missing essentials
-  let coverage = computeCoverage(essentialsResolved);
-  let retried = false;
-  if (coverage.coverage < COVERAGE_THRESHOLD && coverage.unfulfilled.length > 0) {
-    notes.push(
-      `Coverage ${(coverage.coverage * 100).toFixed(0)}% < ${COVERAGE_THRESHOLD * 100}% — retrying ${coverage.unfulfilled.length} missing: ${coverage.unfulfilled.join(", ")}`,
-    );
-    essentialsResolved = await retryMissing(essentialsResolved);
-    coverage = computeCoverage(essentialsResolved);
-    retried = true;
-  }
-
-  const validation: DebugTrace["validation"] =
-    coverage.coverage >= COVERAGE_THRESHOLD
-      ? "pass"
-      : coverage.fulfilledEssentials > 0
-        ? "partial"
-        : "fail";
-
-  const cart = composeSmartCart(essentialsResolved, recommendedResolved, premiumResolved);
-
+  // ── Stage 7: build response ────────────────────────────────────────
   const totalRetrieved =
-    essentialsResolved.reduce((a, b) => a + b.candidates.length, 0) +
+    augmentedEssentials.reduce((a, b) => a + b.candidates.length, 0) +
     recommendedResolved.reduce((a, b) => a + b.candidates.length, 0) +
     premiumResolved.reduce((a, b) => a + b.candidates.length, 0);
 
   const totalSelected =
     cart.essentials.length + cart.recommended.length + cart.premiumSuggestions.length;
 
+  const status: ChatTurnResponse["status"] =
+    coverage.status === "needs_user_input"
+      ? "needs_user_input"
+      : "ready";
+
+  let reply = planner.reply;
+  if (status === "needs_user_input") {
+    reply = `I couldn't find ${coverage.unfulfilled.map((u) => u.name).join(", ")} in stock. Want me to skip those, or are alternatives okay?`;
+  } else if (substitutions.length > 0) {
+    reply = `${planner.reply} (Substituted: ${substitutions.map((s) => `${s.requirement} → ${s.picks[0]?.product.name}`).join("; ")})`;
+  }
+
   const trace: DebugTrace = {
-    intentType: router.intentType,
-    mission: kb?.slug ?? null,
-    kbSource,
-    requirements: {
-      essentials: essentialReqs,
-      recommended: recommendedReqs,
-      premium: premiumReqs,
-    },
-    resolvedCategories: essentialsResolved.map((r) => ({
-      requirement: r.requirement.name,
-      resolverPath: r.resolverPath,
+    queryType: cls.queryType,
+    classifierConfidence: cls.confidence,
+    classifierReasoning: cls.reasoning,
+    plannerStatus: planner.status,
+    plannerConfidence: planner.confidence,
+    missionSlug: planner.missionSlug,
+    kbHit: false,
+    aliasFastPath: usedAlias,
+    cachedClassifier: false,
+    requirements: planner.requirements,
+    resolverSteps: [
+      ...augmentedEssentials.map((r) => ({
+        requirement: r.requirement.name,
+        resolverPath: r.resolverPath,
+        candidates: r.candidates.length,
+      })),
+      ...recommendedResolved.map((r) => ({
+        requirement: `[recommended] ${r.requirement.name}`,
+        resolverPath: r.resolverPath,
+        candidates: r.candidates.length,
+      })),
+      ...premiumResolved.map((r) => ({
+        requirement: `[premium] ${r.requirement.name}`,
+        resolverPath: r.resolverPath,
+        candidates: r.candidates.length,
+      })),
+    ],
+    coverage: coverage.coverage,
+    unfulfilled: coverage.unfulfilled.map((u) => u.name),
+    substitutions: substitutions.map((s) => ({
+      requirement: s.requirement,
+      picks: s.picks.map((p) => ({ name: p.product.name, reason: p.reason })),
     })),
     retrievedProducts: totalRetrieved,
     selectedProducts: totalSelected,
-    coverage: coverage.coverage,
-    validation,
-    retried,
-    unfulfilled: coverage.unfulfilled,
     notes,
   };
 
-  return { query, cart, coverage, trace };
+  return {
+    sessionId,
+    status,
+    reply,
+    questions: [],
+    cart,
+    coverage,
+    trace,
+  };
 }
