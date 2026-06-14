@@ -1,0 +1,40 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector, pg_trgm]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  image       String
+  price       Float
+  rating      Float    @default(0)
+  reviews     Int      @default(0)
+  quantity    String
+  subCategory String
+  category    String
+  inStock     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([subCategory])
+  @@index([category])
+}
+
+/// Sub-category vocabulary with semantic descriptions and embeddings.
+/// `embedding` is vector(768) — managed via raw SQL since Prisma lacks native vector support.
+model SubCategory {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  category    String
+  description String
+  productCount Int     @default(0)
+  // embedding column added via SQL migration: vector(768)
+
+  @@index([category])
+}

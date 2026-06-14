@@ -1,0 +1,30 @@
+{
+  "name": "shopping-cart-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "seed:products": "tsx src/scripts/seedProducts.ts",
+    "seed:categories": "tsx src/scripts/seedCategories.ts",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test:e2e": "tsx src/scripts/testE2E.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^0.7.0",
+    "@prisma/client": "^5.22.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

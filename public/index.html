@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Shopping Cart</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        background: #f6f7f9;
+        color: #1a1a1a;
+      }
+      header {
+        padding: 24px 32px;
+        background: #fff;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+      header p { margin: 4px 0 0; color: #6b7280; font-size: 13px; }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 24px 16px 64px;
+      }
+      .composer {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 24px;
+      }
+      .composer input {
+        flex: 1;
+        padding: 12px 14px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 15px;
+        background: #fff;
+      }
+      .composer input:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
+      .composer button {
+        padding: 12px 20px;
+        background: #111827;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .examples {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 24px;
+      }
+      .examples button {
+        padding: 6px 12px;
+        background: #fff;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        font-size: 12px;
+        cursor: pointer;
+        color: #374151;
+      }
+      .examples button:hover { background: #f3f4f6; }
+      .meta {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 14px 16px;
+        font-size: 13px;
+        margin-bottom: 16px;
+        color: #374151;
+      }
+      .meta strong { color: #111827; }
+      .meta ul { margin: 6px 0 0; padding-left: 18px; }
+      .meta li { margin: 2px 0; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .card img {
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: contain;
+        background: #f9fafb;
+        border-radius: 6px;
+      }
+      .card .name {
+        font-size: 13px;
+        line-height: 1.3;
+        font-weight: 500;
+        min-height: 2.6em;
+      }
+      .card .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 12px;
+        color: #6b7280;
+      }
+      .card .price { font-weight: 600; color: #111827; font-size: 14px; }
+      .card .reason { font-size: 11px; color: #6b7280; font-style: italic; }
+      .card .sub {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #9ca3af;
+      }
+      .empty {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 24px;
+        text-align: center;
+        color: #6b7280;
+      }
+      .err {
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #991b1b;
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        font-size: 13px;
+      }
+      .loading {
+        display: inline-block;
+        width: 14px; height: 14px;
+        border: 2px solid #d1d5db;
+        border-top-color: #111827;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AI Shopping Cart</h1>
+      <p>Describe what you need. The cart fills itself.</p>
+    </header>
+    <main>
+      <form class="composer" id="composer">
+        <input
+          id="q"
+          type="text"
+          placeholder="e.g. Movie night snacks for 5 people with savory and sweet taste"
+          autocomplete="off"
+          required
+        />
+        <button id="go" type="submit">Generate cart</button>
+      </form>
+      <div class="examples">
+        <button data-q="Movie night snacks for 5 people with savory and sweet taste">Movie night for 5</button>
+        <button data-q="Baby food and diapers">Baby care</button>
+        <button data-q="Healthy breakfast for 2 people">Healthy breakfast</button>
+        <button data-q="Birthday party supplies for 10 kids">Kids' birthday</button>
+        <button data-q="Quick weeknight dinner ingredients">Weeknight dinner</button>
+      </div>
+      <div id="status"></div>
+      <div id="meta"></div>
+      <div id="cart"></div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const composer = $("composer");
+      const input = $("q");
+      const btn = $("go");
+      const cartEl = $("cart");
+      const metaEl = $("meta");
+      const statusEl = $("status");
+
+      function escape(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]),
+        );
+      }
+
+      async function run(query) {
+        cartEl.innerHTML = "";
+        metaEl.innerHTML = "";
+        statusEl.innerHTML = '<div class="meta"><span class="loading"></span> &nbsp;Working — extracting intent, retrieving categories, ranking, composing, validating…</div>';
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/cart", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query }),
+          });
+          const data = await res.json();
+          statusEl.innerHTML = "";
+          if (!res.ok) {
+            statusEl.innerHTML = `<div class="err">${escape(data.error || "Request failed")}</div>`;
+            return;
+          }
+          render(data);
+        } catch (e) {
+          statusEl.innerHTML = `<div class="err">${escape(e.message)}</div>`;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function render(data) {
+        const intent = data.intent || {};
+        const cats = data.selectedCategories || [];
+        const reasoning = data.reasoning || [];
+        const removed = data.removed || [];
+
+        const intentBits = [
+          intent.occasion && `<strong>Occasion:</strong> ${escape(intent.occasion)}`,
+          intent.people != null && `<strong>People:</strong> ${escape(intent.people)}`,
+          (intent.preferences || []).length && `<strong>Preferences:</strong> ${(intent.preferences || []).map(escape).join(", ")}`,
+        ].filter(Boolean).join(" &nbsp;·&nbsp; ");
+
+        metaEl.innerHTML = `
+          <div class="meta">
+            <div>${intentBits}</div>
+            <div style="margin-top:6px;"><strong>Selected sub-categories:</strong> ${cats.map(escape).join(", ")}</div>
+            ${reasoning.length ? `<details style="margin-top:8px;"><summary style="cursor:pointer;">Reasoning trace</summary><ul>${reasoning.map((r) => `<li>${escape(r)}</li>`).join("")}</ul></details>` : ""}
+            ${removed.length ? `<details style="margin-top:6px;"><summary style="cursor:pointer;">Validator removed ${removed.length} item(s)</summary><ul>${removed.map((r) => `<li><strong>${escape(r.name)}</strong> — ${escape(r.reason)}</li>`).join("")}</ul></details>` : ""}
+          </div>
+        `;
+
+        const cart = data.cart || [];
+        if (!cart.length) {
+          cartEl.innerHTML = '<div class="empty">No products matched.</div>';
+          return;
+        }
+
+        cartEl.innerHTML = `<div class="grid">${cart
+          .map(
+            (p) => `
+            <div class="card">
+              <img src="${escape(p.image)}" alt="${escape(p.name)}" loading="lazy" onerror="this.style.visibility='hidden'" />
+              <div class="sub">${escape(p.subCategory)}</div>
+              <div class="name">${escape(p.name)}</div>
+              <div class="row">
+                <span class="price">₹${escape(p.price)}</span>
+                <span>${escape(p.quantity)}</span>
+              </div>
+              ${p.reason ? `<div class="reason">${escape(p.reason)}</div>` : ""}
+            </div>`,
+          )
+          .join("")}</div>`;
+      }
+
+      composer.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const q = input.value.trim();
+        if (q) run(q);
+      });
+
+      document.querySelectorAll(".examples button").forEach((b) => {
+        b.addEventListener("click", () => {
+          input.value = b.dataset.q;
+          run(b.dataset.q);
+        });
+      });
+    </script>
+  </body>
+</html>
