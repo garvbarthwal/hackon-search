@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateCart } from "./lib/pipeline.js";
+import { generateSmartCart } from "./lib/orchestrator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +17,7 @@ app.post("/api/cart", async (req, res) => {
     return;
   }
   try {
-    const result = await generateCart(query);
+    const result = await generateSmartCart(query);
     res.json(result);
   } catch (err) {
     console.error("[api/cart] error:", err);

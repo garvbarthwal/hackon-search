@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { prisma } from "../lib/db.js";
-import { embedTexts, generateJSON, toPgVector } from "../lib/gemini.js";
+import { embedTexts, toPgVector } from "../lib/gemini.js";
+import { llm } from "../lib/llm.js";
 
 type DescBatch = { name: string; description: string }[];
 
@@ -90,7 +91,10 @@ async function main() {
       JSON.stringify(payload, null, 2),
     ].join("\n");
 
-    const out = await generateJSON<{ items: DescBatch }>(prompt, descSchema);
+    const out = await llm.generateJSON<{ items: DescBatch }>({
+      messages: [{ role: "user", content: prompt }],
+      schema: descSchema,
+    });
     for (const item of out.items) {
       descriptions.set(item.name, item.description);
     }
