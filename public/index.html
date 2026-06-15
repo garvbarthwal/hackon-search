@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SmartCart v4.5</title>
+    <title>SmartCart v5</title>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -11,8 +11,7 @@
         margin: 0;
         background: #f6f7f9;
         color: #1a1a1a;
-        height: 100vh;
-        overflow: hidden;
+        min-height: 100vh;
       }
       header {
         padding: 14px 24px;
@@ -23,86 +22,64 @@
         align-items: center;
       }
       header h1 { margin: 0; font-size: 16px; font-weight: 600; }
-      header .reset {
-        font-size: 12px; padding: 6px 12px; background: #fff;
-        border: 1px solid #d1d5db; border-radius: 6px;
-        cursor: pointer; color: #6b7280;
-      }
-      header .reset:hover { background: #f3f4f6; }
+      header .sub { font-size: 12px; color: #6b7280; }
 
       main {
         display: grid;
-        grid-template-columns: 420px 1fr;
-        height: calc(100vh - 49px);
+        grid-template-columns: 460px 1fr;
+        min-height: calc(100vh - 49px);
       }
-      #chat {
+      #form-pane {
+        background: #fff;
+        border-right: 1px solid #e5e7eb;
+        padding: 16px 18px;
         display: flex;
         flex-direction: column;
-        border-right: 1px solid #e5e7eb;
+        gap: 12px;
+      }
+      #form-pane label {
+        font-size: 11px; font-weight: 600;
+        color: #374151; text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      #form-pane input[type="text"],
+      #form-pane textarea {
+        width: 100%;
+        font-family: inherit;
+        font-size: 14px;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
         background: #fff;
       }
-      #log {
-        flex: 1;
-        overflow-y: auto;
-        padding: 16px;
+      #form-pane textarea {
+        font-family: ui-monospace, "SF Mono", monospace;
+        font-size: 12px;
+        min-height: 130px;
+        resize: vertical;
       }
-      .msg {
-        max-width: 85%;
-        padding: 10px 14px;
-        border-radius: 14px;
-        margin-bottom: 8px;
-        font-size: 14px;
-        line-height: 1.4;
-        white-space: pre-wrap;
-        word-wrap: break-word;
+      #form-pane input:focus,
+      #form-pane textarea:focus {
+        outline: 2px solid #3b82f6; outline-offset: -1px;
       }
-      .msg.user {
-        background: #2563eb; color: #fff; margin-left: auto;
-        border-bottom-right-radius: 4px;
+      #form-pane .row {
+        display: flex; gap: 8px;
       }
-      .msg.assistant {
-        background: #f3f4f6; color: #111827;
-        border-bottom-left-radius: 4px;
+      #form-pane .row > * { flex: 1; }
+      #form-pane button[type="submit"] {
+        padding: 11px 16px; background: #111827;
+        color: #fff; border: none; border-radius: 6px;
+        font-size: 14px; font-weight: 500; cursor: pointer;
       }
-      .msg.system {
-        background: #fef3c7; color: #92400e;
-        font-size: 12px; padding: 8px 12px;
-        margin: 0 auto 8px; max-width: 90%; text-align: center;
+      #form-pane button[disabled] { opacity: 0.5; cursor: not-allowed; }
+      #form-pane .helper {
+        font-size: 11px; color: #6b7280; line-height: 1.4;
       }
-      .questions {
-        display: flex; flex-wrap: wrap; gap: 6px;
-        margin: 6px 0 12px;
-      }
-      .questions button {
-        font-size: 12px; padding: 6px 10px;
-        border: 1px solid #d1d5db; background: #fff;
-        border-radius: 999px; cursor: pointer; color: #374151;
-      }
-      .questions button:hover { background: #f3f4f6; }
-
-      #composer {
-        display: flex; gap: 8px; padding: 12px;
-        border-top: 1px solid #e5e7eb;
-      }
-      #composer input {
-        flex: 1; padding: 10px 14px; font-size: 14px;
-        border: 1px solid #d1d5db; border-radius: 8px;
-      }
-      #composer input:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
-      #composer button {
-        padding: 10px 16px; background: #111827;
-        color: #fff; border: none; border-radius: 8px;
-        font-size: 14px; cursor: pointer;
-      }
-      #composer button:disabled { opacity: 0.5; cursor: not-allowed; }
       #suggestions {
-        padding: 0 12px 8px;
         display: flex; flex-wrap: wrap; gap: 6px;
-        border-top: 1px solid #f3f4f6;
-        padding-top: 8px;
       }
       #suggestions button {
-        font-size: 11px; padding: 4px 9px;
+        font-size: 11px; padding: 5px 10px;
         border: 1px solid #e5e7eb; background: #fff;
         border-radius: 999px; cursor: pointer; color: #6b7280;
       }
@@ -128,9 +105,9 @@
         background: #f3f4f6; border-radius: 999px; color: #374151;
         margin-left: 6px;
       }
-      .badge.ready { background: #d1fae5; color: #065f46; }
+      .badge.success { background: #d1fae5; color: #065f46; }
       .badge.partial { background: #fef3c7; color: #92400e; }
-      .badge.fail { background: #fee2e2; color: #991b1b; }
+      .badge.failed { background: #fee2e2; color: #991b1b; }
       .badge.path-exact_product { background: #dbeafe; color: #1e3a8a; }
       .badge.path-brand { background: #ede9fe; color: #5b21b6; }
       .badge.path-subcategory { background: #d1fae5; color: #065f46; }
@@ -192,8 +169,13 @@
         padding: 10px; border-radius: 6px; font-size: 10px;
         overflow-x: auto;
       }
+      .err {
+        background: #fef2f2; border: 1px solid #fecaca;
+        color: #991b1b; padding: 10px 12px;
+        border-radius: 6px; font-size: 13px;
+      }
       .typing {
-        display: inline-block; width: 28px;
+        display: inline-block; vertical-align: middle;
       }
       .typing span {
         display: inline-block; width: 5px; height: 5px;
@@ -208,126 +190,111 @@
   </head>
   <body>
     <header>
-      <h1>SmartCart v4.5</h1>
-      <button class="reset" id="reset" title="Start a new session">New chat</button>
+      <h1>SmartCart v5</h1>
+      <span class="sub">stateless cart engine — query + parameters in, cart out</span>
     </header>
     <main>
-      <section id="chat">
-        <div id="log"></div>
+      <section id="form-pane">
+        <form id="form">
+          <label for="query">Query</label>
+          <input id="query" type="text" placeholder="movie night snacks" autocomplete="off" autofocus />
+
+          <div style="height:6px"></div>
+
+          <label for="parameters">Parameters (JSON, optional)</label>
+          <textarea id="parameters" spellcheck="false" placeholder='{
+  "people": 5,
+  "tastePreference": ["sweet", "savory"]
+}'></textarea>
+          <p class="helper">
+            Free-form context the frontend has already gathered. Common keys:
+            <code>people</code>, <code>guestCount</code>, <code>servings</code>,
+            <code>tastePreference</code>, <code>budget</code>,
+            <code>vegetarian</code>, <code>babyAgeMonths</code>,
+            <code>includeX</code>. Unknown keys are tolerated.
+          </p>
+
+          <div style="height:4px"></div>
+          <button id="send" type="submit">Generate cart</button>
+        </form>
+
+        <label style="margin-top:6px">Examples</label>
         <div id="suggestions">
           <button data-q="Maggi">Maggi</button>
           <button data-q="Lemon">Lemon</button>
           <button data-q="Amul">Amul</button>
-          <button data-q="Baby Food">Baby Food</button>
-          <button data-q="Diwali Decorations">Diwali</button>
+          <button data-q="Pav Bhaji" data-p='{"servings":6,"spiceLevel":"medium"}'>Pav Bhaji ×6</button>
+          <button data-q="movie night snacks" data-p='{"people":5,"tastePreference":["sweet","savory"]}'>Movie night ×5</button>
+          <button data-q="tea party" data-p='{"guestCount":10,"includeCake":true,"includeCookies":true}'>Tea party ×10</button>
+          <button data-q="baby care products" data-p='{"babyAgeMonths":8,"includeFood":true,"includeDiapers":true}'>Baby care · 8mo</button>
+          <button data-q="healthy breakfast" data-p='{"people":4,"vegetarian":true,"highProtein":true}'>Healthy breakfast ×4</button>
+          <button data-q="Diwali decorations">Diwali</button>
           <button data-q="Christmas">Christmas</button>
-          <button data-q="Tea Party">Tea Party</button>
-          <button data-q="Pav Bhaji">Pav Bhaji</button>
-          <button data-q="Movie Night">Movie Night</button>
         </div>
-        <form id="composer">
-          <input id="msg" type="text" placeholder="What are you shopping for?" autocomplete="off" autofocus />
-          <button id="send" type="submit">Send</button>
-        </form>
       </section>
       <section id="panel" class="empty">
-        <span>Ask for a product, dish, or occasion to see the cart.</span>
+        <span>Submit a query (and optional parameters) to see the cart.</span>
       </section>
     </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const log = $("log"), msgInput = $("msg"), sendBtn = $("send");
-      const composer = $("composer"), panel = $("panel"), resetBtn = $("reset");
+      const queryInput = $("query"), paramsInput = $("parameters");
+      const form = $("form"), sendBtn = $("send"), panel = $("panel");
 
       const escape = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-      let sessionId = sessionStorage.getItem("sid") || "";
-
-      function appendMsg(role, content) {
-        const div = document.createElement("div");
-        div.className = "msg " + role;
-        div.textContent = content;
-        log.appendChild(div);
-        log.scrollTop = log.scrollHeight;
-        return div;
-      }
-
-      function appendQuestions(qs) {
-        if (!qs || qs.length === 0) return;
-        const wrap = document.createElement("div");
-        wrap.className = "questions";
-        for (const q of qs) {
-          const b = document.createElement("button");
-          b.textContent = q;
-          b.onclick = () => { msgInput.value = q; msgInput.focus(); };
-          wrap.appendChild(b);
+      function parseParameters() {
+        const raw = paramsInput.value.trim();
+        if (!raw) return {};
+        try {
+          const obj = JSON.parse(raw);
+          if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+            throw new Error("must be a JSON object");
+          }
+          return obj;
+        } catch (e) {
+          throw new Error("Parameters JSON: " + e.message);
         }
-        log.appendChild(wrap);
-        log.scrollTop = log.scrollHeight;
       }
 
-      function appendTyping() {
-        const div = document.createElement("div");
-        div.className = "msg assistant";
-        div.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
-        log.appendChild(div);
-        log.scrollTop = log.scrollHeight;
-        return div;
+      function setLoading(on) {
+        sendBtn.disabled = on;
+        sendBtn.innerHTML = on
+          ? `<span class="typing"><span></span><span></span><span></span></span>`
+          : "Generate cart";
       }
 
-      async function send(text) {
-        if (!text) return;
-        appendMsg("user", text);
-        msgInput.value = "";
-        sendBtn.disabled = true;
-        const typing = appendTyping();
+      async function submit(query, parameters) {
+        if (!query) return;
+        setLoading(true);
+        panel.classList.remove("empty");
+        panel.innerHTML = `<div class="meta-bar"><span class="typing"><span></span><span></span><span></span></span> Planning…</div>`;
 
         try {
-          const res = await fetch("/v1/cart/chat?debug=1", {
+          const res = await fetch("/v1/cart/plan?debug=1", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId, message: text }),
+            body: JSON.stringify({ query, parameters }),
           });
           const data = await res.json();
-          typing.remove();
 
-          if (!res.ok) {
-            appendMsg("system", (data && data.error && data.error.message) || "Request failed");
+          if (!res.ok || data.status === "failed" && data.error) {
+            renderError(data.error?.message || `HTTP ${res.status}`);
             return;
           }
-          // v5 contract: surface debug under `trace` and coverage under `coverage` for the existing renderer.
-          if (data.debug) data.trace = data.debug;
-          if (typeof data.coverage === "number") data.coverage = { coverage: data.coverage };
-          if (data.audit) data.auditor = { ...data.audit, remove: data.audit.removed.map(r => r.productId), reasons: data.audit.removed };
-
-          if (data.sessionId) {
-            sessionId = data.sessionId;
-            sessionStorage.setItem("sid", sessionId);
-          }
-
-          appendMsg("assistant", data.reply);
-          if (data.questions && data.questions.length) {
-            appendQuestions(data.questions);
-          }
-
-          if (data.cart) {
-            const hasAnything =
-              data.cart.essentials?.length ||
-              data.cart.recommended?.length ||
-              data.cart.premiumSuggestions?.length;
-            if (hasAnything || data.status === "partial_success" || data.status === "failed") {
-              renderCart(data);
-            }
-          }
+          renderCart(data);
         } catch (e) {
-          typing.remove();
-          appendMsg("system", e.message || "Network error");
+          renderError(e.message || "Network error");
         } finally {
-          sendBtn.disabled = false;
-          msgInput.focus();
+          setLoading(false);
+          queryInput.focus();
         }
+      }
+
+      function renderError(msg) {
+        panel.innerHTML = `<div class="err">${escape(msg)}</div>`;
       }
 
       function card(p, klass = "") {
@@ -351,45 +318,53 @@
       }
 
       function renderCart(data) {
-        panel.classList.remove("empty");
         const cart = data.cart || { essentials: [], recommended: [], premiumSuggestions: [] };
-        const t = data.trace || {};
-        const cov = data.coverage || {};
+        const t = data.debug || {};
+        const cov = typeof data.coverage === "number" ? data.coverage : 0;
 
-        const statusBadge =
-          data.status === "ready" ? `<span class="badge ready">ready</span>` :
-          data.status === "needs_user_input" ? `<span class="badge fail">needs input</span>` :
-          `<span class="badge partial">${escape(data.status)}</span>`;
+        const statusBadge = `<span class="badge ${escape(data.status)}">${escape(data.status)}</span>`;
+
+        const reqsBlock = data.requirements
+          ? `
+            <details style="margin-top:8px;">
+              <summary>Requirements (${(data.requirements.essentials?.length||0)} essential · ${(data.requirements.recommended?.length||0)} recommended · ${(data.requirements.premium?.length||0)} premium)</summary>
+              <pre>${escape(JSON.stringify(data.requirements, null, 2))}</pre>
+            </details>`
+          : "";
+
+        const auditBlock = data.audit && data.audit.removed && data.audit.removed.length
+          ? `
+            <div style="margin-top:8px;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11px;color:#991b1b;">
+              <strong>Auditor removed ${data.audit.removed.length}${data.audit.retries ? ` (${data.audit.retries} retr${data.audit.retries===1?'y':'ies'})` : ""}:</strong>
+              <div style="margin-top:4px;color:#7f1d1d;">${escape(data.audit.summary || "")}</div>
+              ${data.audit.removed.slice(0, 4).map(r => `<div style="margin-top:2px;">• ${escape(r.reason)}</div>`).join("")}
+            </div>`
+          : data.audit && data.audit.summary
+            ? `<div style="margin-top:8px;font-size:11px;color:#065f46;"><strong>Auditor:</strong> passed${data.audit.retries ? ` after ${data.audit.retries} retr${data.audit.retries===1?'y':'ies'}` : ""}.</div>`
+            : "";
 
         const meta = `
           <div class="meta-bar">
             <div>
-              <strong>Type:</strong> ${escape(t.queryType || "?")}
+              <strong>Type:</strong> ${escape(data.queryType || "?")}
               ${t.missionSlug ? `&nbsp;·&nbsp; <strong>Plan:</strong> ${escape(t.missionSlug)}` : ""}
               ${t.festival ? `&nbsp;·&nbsp; <strong>Festival:</strong> ${escape(t.festival)}` : ""}
-              ${cov.coverage !== undefined ? `&nbsp;·&nbsp; <strong>Coverage:</strong> ${(cov.coverage * 100).toFixed(0)}%` : ""}
+              &nbsp;·&nbsp; <strong>Coverage:</strong> ${(cov * 100).toFixed(0)}%
               ${statusBadge}
             </div>
+            ${data.parameters && Object.keys(data.parameters).length ? `<div style="margin-top:6px;color:#374151;"><strong>Parameters:</strong> ${escape(JSON.stringify(data.parameters))}</div>` : ""}
             ${t.unfulfilled && t.unfulfilled.length ? `<div style="margin-top:6px;color:#92400e;"><strong>Unfulfilled:</strong> ${t.unfulfilled.map(escape).join(", ")}</div>` : ""}
             ${t.substitutions && t.substitutions.length ? `<div style="margin-top:4px;font-size:11px;color:#92400e;">${t.substitutions.map(s => `${escape(s.requirement)} → ${escape(s.picks[0]?.name || "")}`).join(" · ")}</div>` : ""}
-            ${data.auditor && data.auditor.remove && data.auditor.remove.length ? `
-              <div style="margin-top:8px;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11px;color:#991b1b;">
-                <strong>Auditor removed ${data.auditor.remove.length}${t.retries ? ` (${t.retries} retr${t.retries===1?'y':'ies'})` : ""}:</strong>
-                <div style="margin-top:4px;color:#7f1d1d;">${escape(data.auditor.summary || "")}</div>
-                ${(data.auditor.reasons || []).slice(0, 4).map(r => `<div style="margin-top:2px;">• ${escape(r.reason)}</div>`).join("")}
-              </div>` : data.auditor && data.auditor.summary ? `
-              <div style="margin-top:8px;font-size:11px;color:#065f46;">
-                <strong>Auditor:</strong> passed${t.retries ? ` after ${t.retries} retr${t.retries===1?'y':'ies'}` : ""}.
-              </div>` : ""}
+            ${auditBlock}
+            ${reqsBlock}
             <details style="margin-top:8px;">
               <summary>Debug trace</summary>
               <pre>${escape(JSON.stringify({
                 queryType: t.queryType,
                 classifierConfidence: t.classifierConfidence,
-                plannerStatus: t.plannerStatus,
                 plannerConfidence: t.plannerConfidence,
-                aliasFastPath: t.aliasFastPath,
                 festival: t.festival,
+                parameters: t.parameters,
                 resolverSteps: t.resolverSteps,
                 constraints: t.constraints,
                 coverage: t.coverage,
@@ -426,19 +401,26 @@
         panel.innerHTML = meta + sectionsHtml;
       }
 
-      composer.addEventListener("submit", (e) => {
+      form.addEventListener("submit", (e) => {
         e.preventDefault();
-        send(msgInput.value.trim());
+        let parameters;
+        try {
+          parameters = parseParameters();
+        } catch (err) {
+          renderError(err.message);
+          return;
+        }
+        submit(queryInput.value.trim(), parameters);
       });
+
       document.querySelectorAll("#suggestions button").forEach((b) => {
-        b.addEventListener("click", () => send(b.dataset.q));
-      });
-      resetBtn.addEventListener("click", async () => {
-        sessionStorage.removeItem("sid");
-        sessionId = "";
-        log.innerHTML = "";
-        panel.className = "empty";
-        panel.innerHTML = "<span>Ask for a product, dish, or occasion to see the cart.</span>";
+        b.addEventListener("click", () => {
+          queryInput.value = b.dataset.q || "";
+          paramsInput.value = b.dataset.p
+            ? JSON.stringify(JSON.parse(b.dataset.p), null, 2)
+            : "";
+          form.requestSubmit();
+        });
       });
     </script>
   </body>

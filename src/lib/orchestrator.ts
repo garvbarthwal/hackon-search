@@ -1,30 +1,29 @@
 /**
- * v3.5 Orchestrator.
+ * v5 Stateless Orchestrator.
  *
- *   query → classifier → planner (alias fast-path) → resolver → coverage
- *         → substitution (if coverage >= 0.9) → composer → final cart
+ *   { query, parameters } → classifier → planner → resolver → coverage
+ *                         → substitution (if coverage >= 0.9) → composer
+ *                         → auditor (with up to 2 retries) → final cart
  *
- * Stateful: takes (sessionId, history, message) and returns the next state of
- * the conversation. If the planner asks questions, we return early without
- * resolving — that round-trips through the chat UI.
+ * Pure cart-generation engine. No conversation, no clarification, no session
+ * state. The frontend gathers any context it needs and passes it in via
+ * `parameters`.
  */
 import { classify } from "./classifier.js";
-import { plan, aliasFastPath, type ChatMessage, type PlannerOutput, type Requirement } from "./planner.js";
+import { plan, type PlannerOutput, type Requirement } from "./planner.js";
 import { resolveAll, type ResolvedRequirement } from "./resolver.js";
-import { computeCoverage, type CoverageReport, COVERAGE_THRESHOLD } from "./coverage.js";
+import { computeCoverage, type CoverageReport } from "./coverage.js";
 import { substitute, applySubstitutions, type Substitution } from "./substitution.js";
 import { composeSmartCart, type SmartCart } from "./cart.js";
 import { audit, type AuditorVerdict } from "./auditor.js";
 import { constraintFor, festivalFromSlug, type Constraint } from "./constraints.js";
+import type { CartParameters } from "./types/cart.types.js";
 
-export type ChatTurnResponse = {
-  sessionId: string;
-  status: "clarifying" | "ready" | "needs_user_input";
-  reply: string;
-  questions: string[];
-  cart?: SmartCart;
-  coverage?: CoverageReport;
-  auditor?: AuditorVerdict;
+export type CartPipelineResult = {
+  status: "ready" | "partial";
+  cart: SmartCart;
+  coverage: CoverageReport;
+  auditor: AuditorVerdict;
   trace: DebugTrace;
 };
 
@@ -32,13 +31,10 @@ export type DebugTrace = {
   queryType: string;
   classifierConfidence: number;
   classifierReasoning: string;
-  plannerStatus: string;
   plannerConfidence: number;
   missionSlug: string | null;
   festival: string | null;
-  kbHit: boolean;
-  aliasFastPath: boolean;
-  cachedClassifier: boolean;
+  parameters: CartParameters;
   requirements: PlannerOutput["requirements"] | null;
   resolverSteps: { requirement: string; resolverPath: string; candidates: number; constraintFiltered: number }[];
   constraints: { requirement: string; allowed: string[]; blocked: string[]; reason: string }[];
@@ -52,72 +48,30 @@ export type DebugTrace = {
   notes: string[];
 };
 
-/**
- * One turn of the conversation. `history` excludes the current `message`.
- */
-export async function processTurn(args: {
-  sessionId: string;
-  history: ChatMessage[];
-  message: string;
-}): Promise<ChatTurnResponse> {
-  const { sessionId, history, message } = args;
+/** Run the full cart-generation pipeline for one request. */
+export async function processCartRequest(args: {
+  query: string;
+  parameters?: CartParameters;
+}): Promise<CartPipelineResult> {
+  const { query } = args;
+  const parameters = args.parameters ?? {};
   const notes: string[] = [];
 
   // ── Stage 1: classify ──────────────────────────────────────────────
-  const cls = await classify(message);
+  const cls = await classify(query);
   notes.push(
     `classifier: ${cls.queryType} (conf=${cls.confidence.toFixed(2)}) — ${cls.reasoning.slice(0, 80)}`,
   );
 
-  // ── Stage 2: plan (alias fast-path → LLM planner) ──────────────────
-  let planner: PlannerOutput | null = await aliasFastPath(cls, history, message);
-  let usedAlias = false;
-  if (planner) {
-    usedAlias = true;
-    notes.push(`planner: alias fast-path hit → ${planner.missionSlug}`);
-  } else {
-    planner = await plan(cls, history, message);
-    notes.push(`planner: ${planner.status} (conf=${planner.confidence.toFixed(2)})`);
-  }
+  // ── Stage 2: plan ──────────────────────────────────────────────────
+  const planner = await plan(cls, query, parameters);
+  notes.push(`planner: confidence=${planner.confidence.toFixed(2)}, slug=${planner.missionSlug ?? "(none)"}`);
 
-  // If still clarifying, return — no resolution this turn.
-  if (planner.status === "clarifying") {
-    return {
-      sessionId,
-      status: "clarifying",
-      reply: planner.reply,
-      questions: planner.questions,
-      trace: {
-        queryType: cls.queryType,
-        classifierConfidence: cls.confidence,
-        classifierReasoning: cls.reasoning,
-        plannerStatus: planner.status,
-        plannerConfidence: planner.confidence,
-        missionSlug: planner.missionSlug,
-        festival: null,
-        kbHit: false,
-        aliasFastPath: usedAlias,
-        cachedClassifier: false,
-        requirements: planner.requirements,
-        resolverSteps: [],
-        constraints: [],
-        coverage: null,
-        unfulfilled: [],
-        substitutions: [],
-        auditor: null,
-        retries: 0,
-        retrievedProducts: 0,
-        selectedProducts: 0,
-        notes,
-      },
-    };
-  }
-
-  // ── Build per-requirement constraints ──────────────────────────────
+  // ── Per-requirement constraints ────────────────────────────────────
   const festival = festivalFromSlug(planner.missionSlug ?? cls.slug);
   const reqs = planner.requirements;
   const buildConstraint = (req: Requirement): Constraint =>
-    constraintFor(req, cls.queryType, festival);
+    constraintFor(req, cls.queryType, festival, parameters);
   const constraintTrace: DebugTrace["constraints"] = [
     ...reqs.essentials,
     ...reqs.recommended,
@@ -189,7 +143,7 @@ export async function processTurn(args: {
     cart = composeSmartCart(ess, rec, prem, essentialSubCats);
 
     const auditInput = {
-      query: message,
+      query,
       queryType: cls.queryType,
       missionSlug: planner.missionSlug,
       requirements: reqs,
@@ -230,7 +184,7 @@ export async function processTurn(args: {
     retries = attempt + 1;
   }
 
-  // ── Stage 7: build response ────────────────────────────────────────
+  // ── Final assembly ─────────────────────────────────────────────────
   const totalRetrieved =
     augmentedEssentials.reduce((a, b) => a + b.candidates.length, 0) +
     recommendedResolved.reduce((a, b) => a + b.candidates.length, 0) +
@@ -239,29 +193,17 @@ export async function processTurn(args: {
   const totalSelected =
     cart.essentials.length + cart.recommended.length + cart.premiumSuggestions.length;
 
-  const status: ChatTurnResponse["status"] =
-    coverage.status === "needs_user_input"
-      ? "needs_user_input"
-      : "ready";
-
-  let reply = planner.reply;
-  if (status === "needs_user_input") {
-    reply = `I couldn't find ${coverage.unfulfilled.map((u) => u.name).join(", ")} in stock. Want me to skip those, or are alternatives okay?`;
-  } else if (substitutions.length > 0) {
-    reply = `${planner.reply} (Substituted: ${substitutions.map((s) => `${s.requirement} → ${s.picks[0]?.product.name}`).join("; ")})`;
-  }
+  const status: CartPipelineResult["status"] =
+    coverage.status === "needs_user_input" ? "partial" : "ready";
 
   const trace: DebugTrace = {
     queryType: cls.queryType,
     classifierConfidence: cls.confidence,
     classifierReasoning: cls.reasoning,
-    plannerStatus: planner.status,
     plannerConfidence: planner.confidence,
     missionSlug: planner.missionSlug,
     festival,
-    kbHit: false,
-    aliasFastPath: usedAlias,
-    cachedClassifier: false,
+    parameters,
     requirements: planner.requirements,
     resolverSteps: [
       ...augmentedEssentials.map((r) => ({
@@ -298,10 +240,7 @@ export async function processTurn(args: {
   };
 
   return {
-    sessionId,
     status,
-    reply,
-    questions: [],
     cart,
     coverage,
     auditor: auditorVerdict,

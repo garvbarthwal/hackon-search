@@ -70,7 +70,13 @@ type RawProduct = {
   inStock: boolean;
 };
 
-const NO_CONSTRAINT: Constraint = { allowed: [], blocked: [], reason: "(none)" };
+const NO_CONSTRAINT: Constraint = {
+  allowed: [],
+  blocked: [],
+  nameInclude: [],
+  nameExclude: [],
+  reason: "(none)",
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ranking
@@ -121,7 +127,13 @@ function applyConstraint<T extends { name: string; domain: string | null }>(
   products: T[],
   constraint: Constraint,
 ): { kept: T[]; filtered: number } {
-  if (constraint.allowed.length === 0 && constraint.blocked.length === 0 && !constraint.festival) {
+  const empty =
+    constraint.allowed.length === 0 &&
+    constraint.blocked.length === 0 &&
+    !constraint.festival &&
+    constraint.nameInclude.length === 0 &&
+    constraint.nameExclude.length === 0;
+  if (empty) {
     return { kept: products, filtered: 0 };
   }
   const kept = products.filter((p) => passesConstraint(p, constraint));

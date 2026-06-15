@@ -1,24 +1,22 @@
 /**
  * v5 Cart Planning Service.
  *
- * The single entry point for both the /v1/cart/plan and /v1/cart/chat
- * endpoints. The controller has zero business logic — it parses HTTP, calls
- * `plan()` or `chat()` here, and serializes the result.
+ * Single entry point for `POST /v1/cart/plan`. The controller has zero
+ * business logic — it parses HTTP, calls `plan()` here, and serializes the
+ * result.
  *
  * Responsibilities:
  *   - Generate a requestId per call
- *   - Resolve / create the session (Redis-backed)
  *   - Drive the underlying orchestrator pipeline
  *   - Write the final CartResponse to CartRequestLog (request audit)
  *   - Cache the response by requestId for status replay
  */
 import { randomUUID } from "node:crypto";
-import { processTurn } from "./orchestrator.js";
-import { ensureSession, getSession, saveSession } from "./sessions.js";
+import { processCartRequest } from "./orchestrator.js";
 import { toCartResponse } from "./responseMapper.js";
 import { prisma } from "./db.js";
 import { cacheGet, cacheSet } from "./redis.js";
-import type { CartResponse } from "./types/cart.types.js";
+import type { CartParameters, CartResponse } from "./types/cart.types.js";
 
 const REQUEST_CACHE_TTL = 24 * 60 * 60; // 24h
 
@@ -26,41 +24,22 @@ const requestKey = (id: string) => `request:${id}`;
 
 export type PlanInput = {
   query: string;
-  sessionId?: string;
+  parameters?: CartParameters;
   includeDebug?: boolean;
 };
 
-async function runPipeline(args: {
-  query: string;
-  sessionId?: string;
-  includeDebug: boolean;
-  isChat: boolean;
-}): Promise<CartResponse> {
+export async function plan(input: PlanInput): Promise<CartResponse> {
   const requestId = randomUUID();
   const t0 = Date.now();
-  const { query, includeDebug, isChat } = args;
+  const parameters = input.parameters ?? {};
 
-  // For chat: load or create session. For plan: stateless single-shot
-  // (we still mint a sessionId so the response shape is uniform).
-  const { sessionId, state } = await ensureSession(args.sessionId);
-
-  const history = isChat ? state.history : [];
-  const turn = await processTurn({ sessionId, history, message: query });
-
-  // Update session for chat. Reset history when the planner closed the
-  // conversation (status='ready' = a cart was returned).
-  if (isChat) {
-    state.history.push({ role: "user", content: query });
-    state.history.push({ role: "assistant", content: turn.reply });
-    if (turn.status === "ready") state.history = [];
-    await saveSession(sessionId, state);
-  }
+  const result = await processCartRequest({ query: input.query, parameters });
 
   const response = toCartResponse({
     requestId,
-    turn,
-    includeDebug,
-    sessionId,
+    result,
+    parameters,
+    includeDebug: !!input.includeDebug,
   });
 
   const latencyMs = Date.now() - t0;
@@ -71,11 +50,11 @@ async function runPipeline(args: {
       .create({
         data: {
           requestId,
-          query,
+          query: input.query,
           queryType: response.queryType,
           status: response.status,
           coverage: response.coverage,
-          sessionId,
+          sessionId: null,
           response: response as object,
           latencyMs,
         },
@@ -87,32 +66,12 @@ async function runPipeline(args: {
   ]);
 
   console.log(
-    `[cart-service] requestId=${requestId} query=${JSON.stringify(query).slice(0, 50)} ` +
+    `[cart-service] requestId=${requestId} query=${JSON.stringify(input.query).slice(0, 50)} ` +
       `type=${response.queryType} status=${response.status} cov=${response.coverage.toFixed(2)} ` +
       `latency=${latencyMs}ms`,
   );
 
   return response;
-}
-
-/** POST /v1/cart/plan — single-shot, no conversation state. */
-export async function plan(input: PlanInput): Promise<CartResponse> {
-  return runPipeline({
-    query: input.query,
-    sessionId: input.sessionId,
-    includeDebug: !!input.includeDebug,
-    isChat: false,
-  });
-}
-
-/** POST /v1/cart/chat — multi-turn, persists conversation history. */
-export async function chat(input: PlanInput): Promise<CartResponse> {
-  return runPipeline({
-    query: input.query,
-    sessionId: input.sessionId,
-    includeDebug: !!input.includeDebug,
-    isChat: true,
-  });
 }
 
 /** GET /v1/cart/status/:requestId — replay a stored response. */

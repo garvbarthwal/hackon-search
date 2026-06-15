@@ -55,11 +55,17 @@ export async function generateJSON<T>(args: {
     },
     inferenceConfig: {
       temperature: args.temperature ?? 0.2,
-      maxTokens: 2048,
+      maxTokens: 4096,
     },
   });
 
   const res = await withRetry(() => client.send(cmd));
+
+  if (process.env.BEDROCK_DEBUG === "1") {
+    console.log(
+      `[bedrock] stopReason=${res.stopReason} usage=${JSON.stringify(res.usage ?? {})}`,
+    );
+  }
 
   const blocks = res.output?.message?.content ?? [];
   for (const block of blocks) {

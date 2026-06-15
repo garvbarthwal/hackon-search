@@ -1,23 +1,19 @@
 /**
- * v5 frozen response envelope.
+ * v5 stateless response envelope.
  *
- * The shape of `CartResponse` is the SmartCart API contract — every endpoint
- * that returns cart-shaped data must return this. New fields may be ADDED at
- * the end; existing fields must not be renamed or removed without a version
- * bump.
+ * SmartCart is a pure cart-generation engine. It owns planning, retrieval,
+ * validation and cart composition only. Conversation/clarification is the
+ * caller's responsibility — the frontend gathers context, then sends a
+ * structured `{ query, parameters }` request and receives a cart back.
  *
- * `cart`, `requirements`, and `audit` here are the FROZEN public shapes —
- * they are NOT the same as the internal `SmartCart` / `PlannerOutput` /
- * `AuditorVerdict` types. The mapper in `src/api/v5.mapper.ts` performs the
+ * `cart`, `requirements`, and `audit` are the FROZEN public shapes — they are
+ * NOT the same as the internal `SmartCart` / `PlannerOutput` /
+ * `AuditorVerdict` types. The mapper in `responseMapper.ts` performs the
  * translation; if internal types change, the mapper is the only file that
  * needs to change.
  */
 
-export type CartStatus =
-  | "success"
-  | "partial_success"
-  | "clarification_required"
-  | "failed";
+export type CartStatus = "success" | "partial_success" | "failed";
 
 export type CartQueryType =
   | "product"
@@ -29,10 +25,12 @@ export type CartQueryType =
   | "category"
   | "unknown";
 
+/** Caller-supplied context. Arbitrary keys allowed — planner reads what it needs. */
+export type CartParameters = Record<string, unknown>;
+
 export type CartRequest = {
-  requestId: string;
   query: string;
-  sessionId?: string;
+  parameters?: CartParameters;
 };
 
 /** A single requirement as it appears in the public response. */
@@ -40,6 +38,8 @@ export type ResponseRequirement = {
   name: string;
   type: string;
   priority: "required" | "recommended" | "optional" | "substitutable";
+  /** Caller-readable target quantity (e.g. "2 packs", "500g", "for 5 people"). */
+  quantity?: string;
 };
 
 export type ResponseCartItem = {
@@ -77,10 +77,8 @@ export type CartResponse = {
   queryType: CartQueryType;
   /** 0..1 — fraction of required essentials with a product. */
   coverage: number;
-  /** When status='clarification_required', questions are populated. */
-  questions: string[];
-  /** Friendly chat reply. */
-  reply: string;
+  /** Echo of caller-supplied parameters (so the response is self-describing). */
+  parameters: CartParameters;
   requirements: {
     essentials: ResponseRequirement[];
     recommended: ResponseRequirement[];
@@ -92,7 +90,6 @@ export type CartResponse = {
   debug?: Record<string, unknown>;
   /** ISO timestamp the response was generated. */
   timestamp: string;
-  sessionId?: string;
 };
 
 /** Error envelope shared across all v1 endpoints. */

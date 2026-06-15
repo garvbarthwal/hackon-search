@@ -9,7 +9,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import * as cartService from "../lib/cartPlanning.service.js";
-import type { ErrorResponse } from "../lib/types/cart.types.js";
+import type { ErrorResponse, CartParameters } from "../lib/types/cart.types.js";
 
 export const cartRouter = Router();
 
@@ -30,37 +30,34 @@ function wantsDebug(req: Request): boolean {
   return req.header("x-debug") === "1";
 }
 
+function parseParameters(raw: unknown): CartParameters {
+  if (raw == null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("`parameters` must be a JSON object.");
+  }
+  return raw as CartParameters;
+}
+
 cartRouter.post("/plan", async (req: Request, res: Response) => {
   const query = (req.body?.query ?? "").toString().trim();
-  const sessionId = req.body?.sessionId ? String(req.body.sessionId) : undefined;
   if (!query) {
     const e = err(req, "invalid_query", "`query` is required and must be non-empty.", 400);
     res.status(e.http).json(e.body);
     return;
   }
+  let parameters: CartParameters;
   try {
-    const out = await cartService.plan({ query, sessionId, includeDebug: wantsDebug(req) });
-    res.json(out);
+    parameters = parseParameters(req.body?.parameters);
   } catch (e) {
-    console.error("[cart-controller] /plan error:", (e as Error).message);
-    const r = err(req, "internal_error", (e as Error).message, 500);
+    const r = err(req, "invalid_parameters", (e as Error).message, 400);
     res.status(r.http).json(r.body);
-  }
-});
-
-cartRouter.post("/chat", async (req: Request, res: Response) => {
-  const query = (req.body?.message ?? req.body?.query ?? "").toString().trim();
-  const sessionId = req.body?.sessionId ? String(req.body.sessionId) : undefined;
-  if (!query) {
-    const e = err(req, "invalid_query", "`message` is required and must be non-empty.", 400);
-    res.status(e.http).json(e.body);
     return;
   }
   try {
-    const out = await cartService.chat({ query, sessionId, includeDebug: wantsDebug(req) });
+    const out = await cartService.plan({ query, parameters, includeDebug: wantsDebug(req) });
     res.json(out);
   } catch (e) {
-    console.error("[cart-controller] /chat error:", (e as Error).message);
+    console.error("[cart-controller] /plan error:", (e as Error).message);
     const r = err(req, "internal_error", (e as Error).message, 500);
     res.status(r.http).json(r.body);
   }

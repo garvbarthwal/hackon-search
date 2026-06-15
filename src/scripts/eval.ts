@@ -24,8 +24,8 @@
 import "dotenv/config";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { processTurn } from "../lib/orchestrator.js";
-import type { ChatTurnResponse } from "../lib/orchestrator.js";
+import { processCartRequest } from "../lib/orchestrator.js";
+import type { CartPipelineResult } from "../lib/orchestrator.js";
 import type { QueryType } from "../lib/classifier.js";
 import { prisma } from "../lib/db.js";
 
@@ -124,10 +124,10 @@ type EvalResult = {
   pass: boolean;
   failures: string[];
   latencyMs: number;
-  response: ChatTurnResponse | null;
+  response: CartPipelineResult | null;
 };
 
-function evaluate(expected: Expected, response: ChatTurnResponse): string[] {
+function evaluate(expected: Expected, response: CartPipelineResult): string[] {
   const failures: string[] = [];
   const cart = response.cart;
   const trace = response.trace;
@@ -215,10 +215,8 @@ async function main() {
     process.stdout.write(`[${i}/${BENCHMARK.length}] ${exp.query.padEnd(40)} `);
     const t0 = Date.now();
     try {
-      const response = await processTurn({
-        sessionId: `eval-${i}`,
-        history: [],
-        message: exp.query,
+      const response = await processCartRequest({
+        query: exp.query,
       });
       const failures = evaluate(exp, response);
       const ms = Date.now() - t0;

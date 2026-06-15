@@ -1,6 +1,11 @@
 # SmartCart API — v5.0.0
 
-Conversational shopping cart planner. You send a query, the API returns a structured cart driven by deterministic retrieval over a Requirement Graph.
+Stateless cart-generation engine. SmartCart converts a structured `{query, parameters}` request into a deterministic cart over a Requirement Graph. **It never asks questions and never holds conversation state** — gathering user intent is the caller's job.
+
+```
+Query + Parameters → Classifier → Planner → Requirement Graph
+                  → Resolver → Ranker → Coverage → Auditor → Cart
+```
 
 ---
 
@@ -15,43 +20,40 @@ Conversational shopping cart planner. You send a query, the API returns a struct
 | **Interactive docs** | `GET /v1/docs` (Swagger UI) |
 | **OpenAPI JSON** | `GET /v1/openapi.json` |
 
-Every cart-bearing endpoint returns the same envelope (see [§6](#6-response-contract)) so clients only need one parser.
+Every cart-bearing endpoint returns the same envelope (see [§5](#5-response-contract)) so clients only need one parser.
 
 ---
 
 ## 2. Quick start
 
 ```bash
-# Boot the stack
 docker compose up -d
 npm run dev
 
-# Single-shot plan
+# Bare query
 curl -X POST http://localhost:3000/v1/cart/plan \
   -H 'Content-Type: application/json' \
   -d '{"query": "Pav Bhaji"}'
-```
 
-That returns a full `CartResponse` with essentials, recommended items, premium suggestions, and an audit verdict.
+# With parameters — a frontend that already collected context
+curl -X POST http://localhost:3000/v1/cart/plan \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "movie night snacks",
+    "parameters": { "people": 5, "tastePreference": ["sweet", "savory"] }
+  }'
+```
 
 ---
 
 ## 3. Authentication
 
-The server reads `SMARTCART_API_KEY` from its environment (`.env` or shell).
+The server reads `SMARTCART_API_KEY` from its environment.
 
-**Server side — to enable auth:**
-```bash
-# .env
-SMARTCART_API_KEY=your-secret-key-here
-```
-Restart the server. You'll see `[server] Auth: enabled (Bearer)` at boot.
+**Enable auth:** set `SMARTCART_API_KEY=…` in `.env`, restart. Boot log says `[server] Auth: enabled (Bearer)`.
+**Disable (dev convenience):** leave `SMARTCART_API_KEY` unset.
 
-**Server side — to disable auth (dev convenience):**
-Leave `SMARTCART_API_KEY` unset. Boot log says `[server] Auth: DISABLED`. All `/v1/cart/*` calls go through without a header.
-
-**Client side — when auth is enabled:**
-Send the key in the `Authorization` header on every `/v1/cart/*` call:
+When enabled, every `/v1/cart/*` call needs:
 ```
 Authorization: Bearer your-secret-key-here
 ```
@@ -74,64 +76,25 @@ A missing or wrong key returns:
 
 ### `GET /v1/health`
 Liveness probe. No auth.
-
-**Response:**
 ```json
 { "status": "ok", "version": "5.0.0", "uptimeSec": 612, "llmProvider": "bedrock" }
 ```
 
----
-
 ### `POST /v1/cart/plan`
-Single-shot, stateless. Best for batch jobs, evaluation, or any caller that doesn't need conversational clarification.
+Generate a cart. Stateless — every request is independent.
 
 **Request:**
 ```json
 {
-  "query": "Diwali decorations",
-  "sessionId": "optional-uuid"
+  "query": "string, required",
+  "parameters": { /* optional, see §6 */ }
 }
 ```
 
-**Response:** `CartResponse` (see [§6](#6-response-contract)).
+**Response:** `CartResponse` (see [§5](#5-response-contract)).
 
 **Query options:**
-- `?debug=1` or header `X-Debug: 1` — include the full pipeline trace under `debug` (classifier confidence, resolver paths, constraints, auditor verdict).
-
----
-
-### `POST /v1/cart/chat`
-Multi-turn. The planner may ask clarifying questions when essential info is missing (max 2 rounds).
-
-**Request — first turn:**
-```json
-{ "message": "movie night" }
-```
-
-**Response if clarification needed:**
-```json
-{
-  "requestId": "...",
-  "status": "clarification_required",
-  "questions": ["How many people?", "Sweet, savoury, or both?"],
-  "reply": "Tell me a bit more about your movie night.",
-  "sessionId": "1c2e9f7d-...-...",
-  "cart": { "essentials": [], "recommended": [], "premiumSuggestions": [] },
-  "...": "..."
-}
-```
-
-**Request — follow-up:** include the `sessionId` you got back.
-```json
-{
-  "sessionId": "1c2e9f7d-...-...",
-  "message": "4 people, both sweet and savoury"
-}
-```
-
-The session is held in Redis with a 30-minute idle TTL. On any `status: "success"` response, the session's history resets — the next message starts a new conversation under the same `sessionId`.
-
----
+- `?debug=1` (or header `X-Debug: 1`) — include the full pipeline trace under `debug` (classifier confidence, resolver paths, constraint trace, auditor verdict, planner notes).
 
 ### `GET /v1/cart/status/:requestId`
 Replays a stored response by its `requestId`. Useful for reconciliation, debugging, or async workflows.
@@ -141,44 +104,29 @@ curl http://localhost:3000/v1/cart/status/3c2ae817-34ee-4aa5-bcb4-d70e1c69d951 \
   -H 'Authorization: Bearer your-secret-key-here'
 ```
 
-Returns the same `CartResponse` that was originally produced, served from Redis (24h) or Postgres (permanent).
-
----
+Served from Redis (24h) or Postgres (permanent).
 
 ### `GET /v1/docs`
-Swagger UI. Open in a browser. Lets you try every endpoint interactively.
+Swagger UI.
 
 ---
 
-## 5. Request fields
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | string | yes (for `/plan`) | The user's natural-language input. |
-| `message` | string | yes (for `/chat`) | Same as `query`. Both names are accepted. |
-| `sessionId` | string | no | UUID. Required to continue a conversation; created server-side if omitted. |
-
-Body must be `Content-Type: application/json`. Max payload 256KB.
-
----
-
-## 6. Response contract
+## 5. Response contract
 
 Every successful endpoint returns this exact shape. Fields will only ever be **added** without a major version bump.
 
 ```json
 {
   "requestId": "uuid",
-  "status": "success | partial_success | clarification_required | failed",
+  "status": "success | partial_success | failed",
   "queryType": "product | brand | ingredient | dish | mission | festival | category | unknown",
   "coverage": 1.0,
-  "questions": [],
-  "reply": "Friendly chat message for the user.",
+  "parameters": { "people": 5 },
 
   "requirements": {
-    "essentials":  [{ "name": "Pav",    "type": "name", "priority": "required" }],
+    "essentials":  [{ "name": "Pav",    "type": "name", "priority": "required",   "quantity": "for 5 people" }],
     "recommended": [{ "name": "Lemon",  "type": "name", "priority": "recommended" }],
-    "premium":     [{ "name": "Cheese", "type": "name", "priority": "optional" }]
+    "premium":     [{ "name": "Cheese", "type": "name", "priority": "optional"    }]
   },
 
   "cart": {
@@ -211,25 +159,78 @@ Every successful endpoint returns this exact shape. Fields will only ever be **a
   },
 
   "timestamp": "2026-06-15T07:33:45.847Z",
-  "sessionId": "uuid",
   "debug": { "...": "only present when ?debug=1 or X-Debug:1" }
 }
 ```
 
 **Status meanings:**
 
-| `status` | When you get it | Coverage |
+| `status` | When you get it |
+|---|---|
+| `success` | Cart fully satisfies required essentials (coverage ≥ 0.9) |
+| `partial_success` | Some essentials unfulfilled, but the cart has at least one item |
+| `failed` | Pipeline produced no usable cart |
+
+The response never contains `questions`, `reply`, or `clarification_required` — clarification is the caller's responsibility.
+
+---
+
+## 6. Parameters
+
+`parameters` is a free-form JSON object. It carries any context the frontend has already collected from the user. The planner reads what it needs and ignores the rest. **Parameters always override the planner's defaults** — pass `people: 8` and the planner scales quantities for 8.
+
+### Common keys the planner respects
+
+| Key | Type | Effect |
 |---|---|---|
-| `success` | Cart fully satisfies required essentials | ≥ 0.9 |
-| `partial_success` | Some essentials unfulfilled or auditor flagged items | 0 < cov < 0.9 |
-| `clarification_required` | Planner needs more info; `questions` is non-empty | n/a |
-| `failed` | Pipeline produced no usable cart | 0 |
+| `people` / `guestCount` / `servings` | number | Scales `quantity` on every essential and recommended |
+| `tastePreference` | string[] | Biases requirements (e.g. `["sweet","savory"]`) |
+| `spiceLevel` | "mild" \| "medium" \| "hot" | Narrows the candidate space |
+| `vegetarian` / `vegan` / `glutenFree` / `dairyFree` / `organic` | boolean | Diet filter |
+| `highProtein` / `lowSugar` | boolean | Nutrition bias |
+| `budget` | number | Tightens the requirement list, suppresses premium |
+| `babyAgeMonths` / `ageGroup` | number / string | Age-appropriate variants |
+| `includeX` / `excludeX` | boolean | Add or omit a requirement family |
+
+Unknown keys are tolerated — the planner uses them in spirit (as hints/filters).
+
+### Examples
+
+```jsonc
+// Movie night, scaled for 5
+{
+  "query": "movie night snacks",
+  "parameters": { "people": 5, "tastePreference": ["sweet", "savory"] }
+}
+
+// Tea party for 10 with extras
+{
+  "query": "tea party",
+  "parameters": { "guestCount": 10, "includeCake": true, "includeCookies": true }
+}
+
+// Baby care, age-aware
+{
+  "query": "baby care products",
+  "parameters": { "babyAgeMonths": 8, "includeFood": true, "includeDiapers": true }
+}
+
+// Pav bhaji, spice-aware, scaled
+{
+  "query": "pav bhaji",
+  "parameters": { "servings": 6, "spiceLevel": "medium" }
+}
+
+// Diet-constrained breakfast
+{
+  "query": "healthy breakfast",
+  "parameters": { "people": 4, "budget": 500, "vegetarian": true, "highProtein": true, "lowSugar": true }
+}
+```
 
 ---
 
 ## 7. Error responses
-
-All errors share this envelope:
 
 ```json
 {
@@ -242,7 +243,8 @@ All errors share this envelope:
 
 | HTTP | `error.code` | Meaning |
 |---|---|---|
-| 400 | `invalid_query` | `query`/`message` missing or empty |
+| 400 | `invalid_query` | `query` missing or empty |
+| 400 | `invalid_parameters` | `parameters` is not a JSON object |
 | 400 | `invalid_request_id` | Path param missing on `/status` |
 | 401 | `unauthorized` | Missing or wrong bearer token |
 | 404 | `not_found` | No matching `requestId` (or unknown `/v1` path) |
@@ -250,17 +252,17 @@ All errors share this envelope:
 
 ---
 
-## 8. Calling from other sites
+## 8. Calling from other clients
 
 ### curl
 ```bash
 curl -X POST http://localhost:3000/v1/cart/plan \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer your-secret-key-here' \
-  -d '{"query": "Pav Bhaji"}'
+  -d '{"query": "tea party", "parameters": {"guestCount": 10}}'
 ```
 
-### JavaScript / Node (server-side)
+### JavaScript / Node
 ```js
 const res = await fetch("http://localhost:3000/v1/cart/plan", {
   method: "POST",
@@ -268,16 +270,17 @@ const res = await fetch("http://localhost:3000/v1/cart/plan", {
     "Content-Type": "application/json",
     "Authorization": "Bearer your-secret-key-here",
   },
-  body: JSON.stringify({ query: "Pav Bhaji" }),
+  body: JSON.stringify({
+    query: "movie night snacks",
+    parameters: { people: 5, tastePreference: ["sweet", "savory"] },
+  }),
 });
 const data = await res.json();
 
-if (data.status === "success") {
+if (data.status !== "failed") {
   for (const item of data.cart.essentials) {
     console.log(`${item.requirement} → ${item.name} (₹${item.price})`);
   }
-} else if (data.status === "clarification_required") {
-  console.log("Need more info:", data.questions);
 }
 ```
 
@@ -287,68 +290,59 @@ import requests
 
 res = requests.post(
     "http://localhost:3000/v1/cart/plan",
-    json={"query": "Pav Bhaji"},
+    json={
+        "query": "baby care products",
+        "parameters": {"babyAgeMonths": 8, "includeFood": True, "includeDiapers": True},
+    },
     headers={"Authorization": "Bearer your-secret-key-here"},
 )
 data = res.json()
 
-if data["status"] == "success":
+if data["status"] != "failed":
     for item in data["cart"]["essentials"]:
         print(f'{item["requirement"]} → {item["name"]}  ₹{item["price"]}')
-elif data["status"] == "clarification_required":
-    print("Need more info:", data["questions"])
 ```
 
-### Multi-turn chat (any language)
+### Frontend pattern (any language)
+
+The frontend collects the user's context via any LLM or form, then makes a single call:
+
 ```python
-sid = None
-while True:
-    msg = input("you: ")
-    body = {"message": msg, **({"sessionId": sid} if sid else {})}
-    res = requests.post("http://localhost:3000/v1/cart/chat", json=body,
-                        headers={"Authorization": "Bearer your-secret-key-here"}).json()
-    sid = res.get("sessionId", sid)
-    print("bot:", res["reply"])
-    if res["status"] == "clarification_required":
-        print("questions:", res["questions"])
-        continue
-    if res["status"] in ("success", "partial_success"):
-        for it in res["cart"]["essentials"]:
-            print(" -", it["name"], "₹"+str(it["price"]))
-        break
+# Pseudocode for a frontend conversation layer
+context = {}
+context["people"] = ask_user("How many people?")
+context["tastePreference"] = ask_user("Sweet, savory, or both?")
+
+cart = requests.post(
+    "http://localhost:3000/v1/cart/plan",
+    json={"query": user_initial_message, "parameters": context},
+).json()
+
+render(cart)
 ```
+
+SmartCart never sees the conversation — only the structured request and response.
 
 ### Browser (cross-origin)
-Calling from a different origin in the browser will fail today — the server has no CORS middleware. Either proxy through your own backend, or ask me to enable CORS (one-line change). For server-to-server calls (the recipes above), CORS is not involved.
+The server has no CORS middleware today. Either proxy through your own backend or ask to enable CORS (one-line change). Server-to-server calls are unaffected.
 
 ---
 
 ## 9. Leveraging the response
 
-### Render essentials + recommended in your UI
+### Render essentials + recommended
 ```js
 const cart = response.cart;
-[
-  ...cart.essentials,         // always show
-  ...cart.recommended,        // top 2 best-fit add-ons
-].forEach(item => addToUi(item));
-
-cart.premiumSuggestions.forEach(item => offerAsUpsell(item));
-```
-
-### Surface clarification flow
-```js
-if (response.status === "clarification_required") {
-  showQuestions(response.questions);
-  // remember response.sessionId for the user's next message
-}
+[...cart.essentials, ...cart.recommended].forEach(addToUi);
+cart.premiumSuggestions.forEach(offerAsUpsell);
 ```
 
 ### Detect partial coverage
 ```js
 if (response.status === "partial_success") {
+  const fulfilled = new Set(response.cart.essentials.map(c => c.requirement));
   const missing = response.requirements.essentials
-    .filter(r => !response.cart.essentials.some(c => c.requirement === r.name));
+    .filter(r => !fulfilled.has(r.name));
   showWarning(`Couldn't find: ${missing.map(m => m.name).join(", ")}`);
 }
 ```
@@ -357,21 +351,20 @@ if (response.status === "partial_success") {
 Send `?debug=1` and inspect `response.debug.resolverSteps` — each entry reports `resolverPath` (`exact_product`, `brand`, `subcategory`, `category`, `synonym`, `embedding`, or `none`) and how many candidates each tier contributed.
 
 ### Replay & audit
-Every call writes to the `CartRequestLog` table and to Redis under `request:{requestId}`. Use `GET /v1/cart/status/:requestId` to fetch the original response any time within 24h (Redis) or indefinitely (Postgres).
+Every call writes to `CartRequestLog` and to Redis under `request:{requestId}`. Use `GET /v1/cart/status/:requestId` within 24h (Redis) or indefinitely (Postgres).
 
 ---
 
 ## 10. Operational notes
 
-- **Sessions** live in Redis at `session:{sessionId}` with a 30-minute idle TTL.
 - **Response cache** lives at `request:{requestId}` for 24 hours.
-- **Planner cache** uses Postgres (`RequirementCache`, 30-day TTL) — repeat queries skip the LLM call.
+- **Planner cache** uses Postgres (`RequirementCache`, 30-day TTL) keyed on `(query, queryType, parameters)` — repeat requests with the same parameters skip the LLM call.
 - **Logs** are one-line JSON per HTTP request:
   ```
   {"ts":"...","requestId":"...","method":"POST","path":"/v1/cart/plan","status":200,"latencyMs":1704}
   ```
-  Plus a `[cart-service]` line per cart pipeline run with `queryType`, `coverage`, and `latency`.
-- **Latency** budget today: 1.5–3s per cold call; cached repeats are <100ms.
+  Plus a `[cart-service]` line per pipeline run with `queryType`, `coverage`, and `latency`.
+- **Latency** budget: 1.5–3s per cold call; cached repeats are <100ms.
 
 ---
 
@@ -386,6 +379,19 @@ Every call writes to the `CartRequestLog` table and to Redis under `request:{req
 | Bearer auth | `src/lib/middleware/auth.ts` |
 | Request ID + log line | `src/lib/middleware/requestId.ts` |
 | OpenAPI spec | `src/api/openapi.ts` |
-| Sessions | `src/lib/sessions.ts` |
 | Redis client | `src/lib/redis.ts` |
-| Pipeline (classifier → planner → resolver → ...) | `src/lib/orchestrator.ts` |
+| Stateless pipeline (classifier → planner → resolver → …) | `src/lib/orchestrator.ts` |
+| Planner prompt + parameter handling | `src/lib/planner.ts` |
+
+---
+
+## 12. What SmartCart is *not*
+
+SmartCart is a pure cart-generation engine. It deliberately does **not**:
+
+- ask clarifying questions
+- maintain chat sessions or conversation state
+- decide *what* to ask the user
+- return follow-up prompts
+
+Those responsibilities sit in the frontend AI layer (chatbot, voice assistant, mobile app, browser extension, agent). The frontend can use any LLM to gather information, then send the final structured `{query, parameters}` to SmartCart. The same SmartCart instance can serve a web chat, a WhatsApp bot, a voice assistant, and an agent — they all converge on the same API call.

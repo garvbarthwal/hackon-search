@@ -11,15 +11,16 @@ export const openApiSpec: OpenAPIV3.Document = {
   info: {
     title: "SmartCart API",
     description:
-      "Conversational shopping cart planner. Converts user intent (product, " +
-      "ingredient, dish, mission, or festival) into a structured cart via " +
-      "deterministic retrieval over a Requirement Graph.",
+      "Stateless shopping cart engine. Converts a structured `{query, parameters}` " +
+      "request into a cart via classifier → planner → resolver → ranker → coverage " +
+      "→ auditor. SmartCart never asks questions or manages conversation — the caller " +
+      "(web app, mobile, voice, agent) gathers context and passes it in via `parameters`.",
     version: "5.0.0",
   },
   servers: [{ url: "/", description: "Current host" }],
   security: [{ BearerAuth: [] }],
   tags: [
-    { name: "cart", description: "Plan and chat endpoints" },
+    { name: "cart", description: "Plan endpoint" },
     { name: "system", description: "Health and metadata" },
   ],
   paths: {
@@ -51,10 +52,13 @@ export const openApiSpec: OpenAPIV3.Document = {
     "/v1/cart/plan": {
       post: {
         tags: ["cart"],
-        summary: "Plan a cart from a single query (stateless)",
+        summary: "Generate a cart from a query and optional parameters",
         description:
-          "Single-shot planner. Does not persist conversation state between " +
-          "calls. For multi-turn clarification, use /v1/cart/chat.",
+          "Stateless. Always attempts to generate a cart. The caller may pass any " +
+          "parameters (`people`, `guestCount`, `tastePreference`, `budget`, " +
+          "`vegetarian`, `babyAgeMonths`, `includeFood`, …); they override planner " +
+          "defaults and scale quantities. Unknown keys are tolerated and forwarded " +
+          "to the planner.",
         requestBody: {
           required: true,
           content: {
@@ -62,38 +66,21 @@ export const openApiSpec: OpenAPIV3.Document = {
               schema: { $ref: "#/components/schemas/PlanRequest" },
               examples: {
                 product: { value: { query: "Maggi" } },
-                dish: { value: { query: "Pav Bhaji" } },
+                dish: {
+                  value: { query: "Pav Bhaji", parameters: { servings: 6, spiceLevel: "medium" } },
+                },
+                mission: {
+                  value: {
+                    query: "movie night snacks",
+                    parameters: { people: 5, tastePreference: ["sweet", "savory"] },
+                  },
+                },
                 festival: { value: { query: "Diwali decorations" } },
-              },
-            },
-          },
-        },
-        responses: {
-          "200": { $ref: "#/components/responses/CartResponse" },
-          "400": { $ref: "#/components/responses/Error" },
-          "401": { $ref: "#/components/responses/Error" },
-          "500": { $ref: "#/components/responses/Error" },
-        },
-      },
-    },
-    "/v1/cart/chat": {
-      post: {
-        tags: ["cart"],
-        summary: "Conversational planner — supports clarification rounds",
-        description:
-          "Submit a user message. If the planner needs clarification, the " +
-          "response has `status='clarification_required'` and a non-empty " +
-          "`questions` array. Reply by calling this endpoint again with the " +
-          "same `sessionId`. Maximum 2 clarification rounds.",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ChatRequest" },
-              examples: {
-                start: { value: { message: "movie night" } },
-                clarification: {
-                  value: { sessionId: "abc-123", message: "4 people, sweet and savoury" },
+                babyCare: {
+                  value: {
+                    query: "baby care products",
+                    parameters: { babyAgeMonths: 8, includeFood: true, includeDiapers: true },
+                  },
                 },
               },
             },
@@ -139,16 +126,17 @@ export const openApiSpec: OpenAPIV3.Document = {
         type: "object",
         required: ["query"],
         properties: {
-          query: { type: "string", minLength: 1, example: "Maggi" },
-          sessionId: { type: "string" },
-        },
-      },
-      ChatRequest: {
-        type: "object",
-        required: ["message"],
-        properties: {
-          message: { type: "string", minLength: 1 },
-          sessionId: { type: "string" },
+          query: { type: "string", minLength: 1, example: "movie night snacks" },
+          parameters: {
+            type: "object",
+            description:
+              "Free-form context the caller has already gathered. Common keys: " +
+              "`people`, `guestCount`, `servings`, `tastePreference`, `spiceLevel`, " +
+              "`budget`, `vegetarian`, `vegan`, `glutenFree`, `babyAgeMonths`, " +
+              "`includeX`, `excludeX`. Unknown keys are tolerated.",
+            additionalProperties: true,
+            example: { people: 5, tastePreference: ["sweet", "savory"] },
+          },
         },
       },
       Requirement: {
@@ -160,6 +148,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             type: "string",
             enum: ["required", "recommended", "optional", "substitutable"],
           },
+          quantity: { type: "string", description: "Scaled target quantity, when known." },
         },
         required: ["name", "type", "priority"],
       },
@@ -199,7 +188,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           requestId: { type: "string" },
           status: {
             type: "string",
-            enum: ["success", "partial_success", "clarification_required", "failed"],
+            enum: ["success", "partial_success", "failed"],
           },
           queryType: {
             type: "string",
@@ -215,8 +204,7 @@ export const openApiSpec: OpenAPIV3.Document = {
             ],
           },
           coverage: { type: "number", minimum: 0, maximum: 1 },
-          questions: { type: "array", items: { type: "string" } },
-          reply: { type: "string" },
+          parameters: { type: "object", additionalProperties: true },
           requirements: {
             type: "object",
             properties: {
@@ -257,15 +245,13 @@ export const openApiSpec: OpenAPIV3.Document = {
           },
           debug: { type: "object", additionalProperties: true },
           timestamp: { type: "string", format: "date-time" },
-          sessionId: { type: "string" },
         },
         required: [
           "requestId",
           "status",
           "queryType",
           "coverage",
-          "questions",
-          "reply",
+          "parameters",
           "requirements",
           "cart",
           "audit",

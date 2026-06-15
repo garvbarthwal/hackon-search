@@ -1,14 +1,15 @@
 /**
  * Maps internal pipeline types → frozen v5 CartResponse.
  *
- * The internal `ChatTurnResponse` (orchestrator), `SmartCart` (cart.ts),
- * `PlannerOutput` (planner.ts), and `AuditorVerdict` (auditor.ts) are free to
- * evolve. This file is the single translation layer to the public contract.
+ * The internal `CartPipelineResult`, `SmartCart`, `PlannerOutput`, and
+ * `AuditorVerdict` types are free to evolve. This file is the single
+ * translation layer to the public contract.
  */
-import type { ChatTurnResponse } from "./orchestrator.js";
+import type { CartPipelineResult } from "./orchestrator.js";
 import type {
   CartResponse,
   CartStatus,
+  CartParameters,
   ResponseCart,
   ResponseCartItem,
   ResponseRequirement,
@@ -45,54 +46,54 @@ function toRespCart(cart: SmartCart | undefined): ResponseCart {
 }
 
 function toRespReq(r: Requirement): ResponseRequirement {
-  return { name: r.name, type: r.type, priority: r.priority };
+  return {
+    name: r.name,
+    type: r.type,
+    priority: r.priority,
+    ...(r.quantity ? { quantity: r.quantity } : {}),
+  };
 }
 
-/** Decide the public status from the internal turn outcome + coverage. */
-function deriveStatus(turn: ChatTurnResponse): CartStatus {
-  if (turn.status === "clarifying") return "clarification_required";
-  if (turn.status === "needs_user_input") return "partial_success";
-  // status === "ready"
-  const cov = turn.coverage?.coverage ?? 0;
-  if (cov >= 0.9) return "success";
+/** Decide the public status from the pipeline outcome + coverage. */
+function deriveStatus(result: CartPipelineResult): CartStatus {
+  const cov = result.coverage?.coverage ?? 0;
+  if (result.status === "ready" && cov >= 0.9) return "success";
   if (cov > 0) return "partial_success";
   return "failed";
 }
 
 export function toCartResponse(args: {
   requestId: string;
-  turn: ChatTurnResponse;
+  result: CartPipelineResult;
+  parameters: CartParameters;
   includeDebug: boolean;
-  sessionId?: string;
 }): CartResponse {
-  const { requestId, turn, includeDebug, sessionId } = args;
-  const reqs = turn.trace.requirements;
+  const { requestId, result, parameters, includeDebug } = args;
+  const reqs = result.trace.requirements;
   const audit: ResponseAudit = {
-    valid: turn.auditor?.valid ?? true,
-    removed: (turn.auditor?.reasons ?? []).map((r) => ({
+    valid: result.auditor?.valid ?? true,
+    removed: (result.auditor?.reasons ?? []).map((r) => ({
       productId: r.productId,
       reason: r.reason,
     })),
-    retries: turn.trace.retries,
-    summary: turn.auditor?.summary ?? "",
+    retries: result.trace.retries,
+    summary: result.auditor?.summary ?? "",
   };
 
   return {
     requestId,
-    status: deriveStatus(turn),
-    queryType: turn.trace.queryType as CartResponse["queryType"],
-    coverage: turn.coverage?.coverage ?? 0,
-    questions: turn.questions ?? [],
-    reply: turn.reply,
+    status: deriveStatus(result),
+    queryType: result.trace.queryType as CartResponse["queryType"],
+    coverage: result.coverage?.coverage ?? 0,
+    parameters,
     requirements: {
       essentials: (reqs?.essentials ?? []).map(toRespReq),
       recommended: (reqs?.recommended ?? []).map(toRespReq),
       premium: (reqs?.premium ?? []).map(toRespReq),
     },
-    cart: toRespCart(turn.cart),
+    cart: toRespCart(result.cart),
     audit,
-    ...(includeDebug ? { debug: turn.trace as unknown as Record<string, unknown> } : {}),
+    ...(includeDebug ? { debug: result.trace as unknown as Record<string, unknown> } : {}),
     timestamp: new Date().toISOString(),
-    ...(sessionId ? { sessionId } : {}),
   };
 }
