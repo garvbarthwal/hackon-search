@@ -229,17 +229,6 @@ export async function plan(
     temperature: 0.3,
   });
 
-  console.log(
-    `[planner] raw output: confidence=${out.confidence} slug=${out.missionSlug} ` +
-      `essentials=${out.essentials?.length ?? 0} recommended=${out.recommended?.length ?? 0} premium=${out.premium?.length ?? 0}`,
-  );
-  if ((out.essentials?.length ?? 0) > 0) {
-    console.log(`[planner] essentials raw:`, JSON.stringify(out.essentials));
-  }
-  if ((out.essentials?.length ?? 0) === 0) {
-    console.log(`[planner] empty output for query=${JSON.stringify(query)} — full payload:`, JSON.stringify(out));
-  }
-
   const result: PlannerOutput = {
     queryType: cls.queryType,
     confidence: Math.max(0, Math.min(1, out.confidence ?? cls.confidence)),

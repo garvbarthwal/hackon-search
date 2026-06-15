@@ -16,7 +16,7 @@
 import { prisma } from "./db.js";
 import { embedOne, toPgVector } from "./gemini.js";
 import type { Requirement } from "./planner.js";
-import { type Constraint, passesConstraint } from "./constraints.js";
+import { type Constraint, passesConstraint, constraintRankBoost } from "./constraints.js";
 
 export type ResolverPath =
   | "exact_product"
@@ -73,7 +73,7 @@ type RawProduct = {
 const NO_CONSTRAINT: Constraint = {
   allowed: [],
   blocked: [],
-  nameInclude: [],
+  nameBoost: [],
   nameExclude: [],
   reason: "(none)",
 };
@@ -102,6 +102,7 @@ async function rankProducts(
   products: RawProduct[],
   path: ResolverPath,
   matchBonusFn: (p: RawProduct) => number = () => 0,
+  constraint: Constraint = NO_CONSTRAINT,
 ): Promise<RankedProduct[]> {
   if (products.length === 0) return [];
   const brandScores = await getBrandScores();
@@ -116,7 +117,7 @@ async function rankProducts(
       const brandScore = p.brand ? (brandScores.get(p.brand) ?? 0) : 0;
       const base =
         0.3 * rating + 0.25 * review + 0.2 * popularity + 0.25 * brandScore;
-      const bonus = matchBonusFn(p);
+      const bonus = matchBonusFn(p) + constraintRankBoost(p, constraint);
       return { ...p, score: base + bonus, resolverPath: path, matchBonus: bonus };
     })
     .sort((a, b) => b.score - a.score);
@@ -131,7 +132,6 @@ function applyConstraint<T extends { name: string; domain: string | null }>(
     constraint.allowed.length === 0 &&
     constraint.blocked.length === 0 &&
     !constraint.festival &&
-    constraint.nameInclude.length === 0 &&
     constraint.nameExclude.length === 0;
   if (empty) {
     return { kept: products, filtered: 0 };
@@ -180,7 +180,7 @@ async function searchExactProduct(
     return b;
   };
 
-  const ranked = await rankProducts(filtered, "exact_product", bonus);
+  const ranked = await rankProducts(filtered, "exact_product", bonus, constraint);
   return { ranked, filtered: constrained.filtered };
 }
 
@@ -196,7 +196,7 @@ async function searchBrand(
   if (exact.length > 0) {
     const c = applyConstraint(exact, constraint);
     if (c.kept.length > 0) {
-      return { ranked: await rankProducts(c.kept, "brand", () => 0.2), filtered: c.filtered };
+      return { ranked: await rankProducts(c.kept, "brand", () => 0.2, constraint), filtered: c.filtered };
     }
   }
   // Trigram match for brand misspellings.
@@ -213,7 +213,7 @@ async function searchBrand(
   if (rows.length > 0) {
     const c = applyConstraint(rows, constraint);
     if (c.kept.length > 0) {
-      return { ranked: await rankProducts(c.kept, "brand", () => 0.1), filtered: c.filtered };
+      return { ranked: await rankProducts(c.kept, "brand", () => 0.1, constraint), filtered: c.filtered };
     }
     return { ranked: [], filtered: c.filtered };
   }
@@ -232,7 +232,7 @@ async function searchSubcategory(
   if (products.length === 0) return { ranked: [], filtered: 0 };
   const c = applyConstraint(products, constraint);
   if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
-  return { ranked: await rankProducts(c.kept, "subcategory"), filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "subcategory", () => 0, constraint), filtered: c.filtered };
 }
 
 async function searchCategory(
@@ -254,7 +254,7 @@ async function searchCategory(
   if (products.length === 0) return { ranked: [], filtered: 0 };
   const c = applyConstraint(products, constraint);
   if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
-  return { ranked: await rankProducts(c.kept, "category"), filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "category", () => 0, constraint), filtered: c.filtered };
 }
 
 async function searchSynonym(
@@ -277,7 +277,7 @@ async function searchSynonym(
   if (products.length === 0) return { ranked: [], filtered: 0 };
   const c = applyConstraint(products, constraint);
   if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
-  return { ranked: await rankProducts(c.kept, "synonym"), filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "synonym", () => 0, constraint), filtered: c.filtered };
 }
 
 async function searchEmbedding(
@@ -306,7 +306,7 @@ async function searchEmbedding(
     if (rows.length === 0) return { ranked: [], filtered: 0 };
     const c = applyConstraint(rows, constraint);
     if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
-    return { ranked: await rankProducts(c.kept, "embedding"), filtered: c.filtered };
+    return { ranked: await rankProducts(c.kept, "embedding", () => 0, constraint), filtered: c.filtered };
   } catch {
     // embedding quota / unavailable
   }
@@ -358,7 +358,7 @@ export async function resolveRequirement(
             if (n.startsWith(kw.toLowerCase())) b += 0.2;
           }
           return b;
-        });
+        }, constraint);
         return {
           requirement: req,
           candidates: ranked.slice(0, TOP_CANDIDATES),

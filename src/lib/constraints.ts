@@ -32,9 +32,9 @@ export type Constraint = {
   blocked: ProductDomain[];
   /** Festival key — when set, products in domain=festival must match this and not rivals. */
   festival?: FestivalKey;
-  /** Product name MUST match at least one of these (OR-set). Empty = no requirement. */
-  nameInclude: RegExp[];
-  /** Product name must NOT match any of these. Empty = no exclusion. */
+  /** Soft preference: products whose name matches one of these get a rank bonus, but unmatched products are NOT dropped. */
+  nameBoost: RegExp[];
+  /** Hard filter: products whose name matches any of these are dropped. */
   nameExclude: RegExp[];
   /** Free-form reason for the trace. */
   reason: string;
@@ -124,26 +124,26 @@ export function constraintFor(
   return finalize(inferFromRequirementName(req), paramFilter);
 }
 
-type PartialConstraint = Omit<Constraint, "nameInclude" | "nameExclude"> & {
-  nameInclude?: RegExp[];
+type PartialConstraint = Omit<Constraint, "nameBoost" | "nameExclude"> & {
+  nameBoost?: RegExp[];
   nameExclude?: RegExp[];
 };
 
 type ParamFilter = {
-  include: RegExp[];
+  boost: RegExp[];
   exclude: RegExp[];
   notes: string[];
 };
 
 function finalize(c: PartialConstraint, p: ParamFilter): Constraint {
-  const nameInclude = [...(c.nameInclude ?? []), ...p.include];
+  const nameBoost = [...(c.nameBoost ?? []), ...p.boost];
   const nameExclude = [...(c.nameExclude ?? []), ...p.exclude];
   const reason = p.notes.length ? `${c.reason}; params=${p.notes.join("+")}` : c.reason;
   return {
     allowed: c.allowed,
     blocked: c.blocked,
     festival: c.festival,
-    nameInclude,
+    nameBoost,
     nameExclude,
     reason,
   };
@@ -167,7 +167,7 @@ function finalize(c: PartialConstraint, p: ParamFilter): Constraint {
  * Unknown keys are silently ignored.
  */
 function compileParameterFilter(params: CartParameters): ParamFilter {
-  const include: RegExp[] = [];
+  const boost: RegExp[] = [];
   const exclude: RegExp[] = [];
   const notes: string[] = [];
 
@@ -175,7 +175,6 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
   const tastes = normalizeStringList(params.tastePreference ?? params.taste);
   if (tastes.length > 0) {
     const includeBits: string[] = [];
-    const excludeBits: string[] = [];
     for (const t of tastes) {
       switch (t) {
         case "sweet":
@@ -191,7 +190,8 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
           includeBits.push(
             "namkeen", "chips", "wafer", "popcorn", "khakhra", "mathri", "bhujia",
             "sev", "mixture", "chivda", "papad", "pickle", "chakli", "murukku",
-            "samosa", "kachori", "bhel", "snack", "cracker", "nachos",
+            "samosa", "kachori", "bhel", "snack", "cracker", "nachos", "chickpea",
+            "roasted", "veggie", "vegetable",
           );
           break;
         case "salty":
@@ -205,8 +205,7 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
           break;
       }
     }
-    if (includeBits.length) include.push(makeWordRegex(includeBits));
-    if (excludeBits.length) exclude.push(makeWordRegex(excludeBits));
+    if (includeBits.length) boost.push(makeWordRegex(includeBits));
     notes.push(`taste=${tastes.join("/")}`);
   }
 
@@ -215,7 +214,6 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
       "fried", "deep fried", "instant noodle", "maggi", "candy", "lollipop",
       "soda", "cola", "soft drink", "energy drink", "chocolate bar",
     ]));
-    // Don't add include here — leave taste include to drive selection.
     notes.push("healthy");
   }
 
@@ -261,7 +259,7 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
   }
 
   if (truthy(params.highProtein) || truthy(params.isHighProtein)) {
-    include.push(makeWordRegex([
+    boost.push(makeWordRegex([
       "paneer", "tofu", "egg", "dal", "chana", "rajma", "soya", "soy", "almond",
       "peanut", "cashew", "yogurt", "curd", "milk", "cheese", "oats", "quinoa",
       "protein",
@@ -270,11 +268,11 @@ function compileParameterFilter(params: CartParameters): ParamFilter {
   }
 
   if (truthy(params.organic) || truthy(params.isOrganic)) {
-    include.push(makeWordRegex(["organic", "natural"]));
+    boost.push(makeWordRegex(["organic", "natural"]));
     notes.push("organic");
   }
 
-  return { include, exclude, notes };
+  return { boost, exclude, notes };
 }
 
 function normalizeStringList(v: unknown): string[] {
@@ -343,7 +341,7 @@ const NAME_HINTS: { match: RegExp; allowed: ProductDomain[]; blocked?: ProductDo
   },
 ];
 
-function inferFromRequirementName(req: Requirement): Omit<Constraint, "nameInclude" | "nameExclude"> {
+function inferFromRequirementName(req: Requirement): Omit<Constraint, "nameBoost" | "nameExclude"> {
   const name = req.name;
   for (const hint of NAME_HINTS) {
     if (hint.match.test(name)) {
@@ -395,11 +393,28 @@ export function passesConstraint(
       if (re.test(product.name)) return false;
     }
   }
-  if (constraint.nameInclude.length > 0) {
-    const ok = constraint.nameInclude.some((re) => re.test(product.name));
-    if (!ok) return false;
-  }
+  // nameBoost is intentionally NOT enforced here — it's a soft preference
+  // applied at rank time via constraintRankBoost(), not a hard filter.
   return true;
+}
+
+/**
+ * Soft rank bonus from parameter-derived `nameBoost` patterns.
+ * Returns 0 if the constraint has no boosts; up to ~0.4 for products that
+ * match multiple boost terms.
+ */
+export function constraintRankBoost(
+  product: { name: string },
+  constraint: Constraint,
+): number {
+  if (constraint.nameBoost.length === 0) return 0;
+  let hits = 0;
+  for (const re of constraint.nameBoost) {
+    if (re.test(product.name)) hits++;
+  }
+  if (hits === 0) return 0;
+  // First match worth 0.2; diminishing returns after.
+  return Math.min(0.4, 0.2 + 0.1 * (hits - 1));
 }
 
 /**
