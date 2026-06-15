@@ -285,7 +285,7 @@
         const typing = appendTyping();
 
         try {
-          const res = await fetch("/api/chat", {
+          const res = await fetch("/v1/cart/chat?debug=1", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ sessionId, message: text }),
@@ -294,9 +294,13 @@
           typing.remove();
 
           if (!res.ok) {
-            appendMsg("system", data.error || "Request failed");
+            appendMsg("system", (data && data.error && data.error.message) || "Request failed");
             return;
           }
+          // v5 contract: surface debug under `trace` and coverage under `coverage` for the existing renderer.
+          if (data.debug) data.trace = data.debug;
+          if (typeof data.coverage === "number") data.coverage = { coverage: data.coverage };
+          if (data.audit) data.auditor = { ...data.audit, remove: data.audit.removed.map(r => r.productId), reasons: data.audit.removed };
 
           if (data.sessionId) {
             sessionId = data.sessionId;
@@ -309,10 +313,13 @@
           }
 
           if (data.cart) {
-            renderCart(data);
-          } else if (data.status === "needs_user_input") {
-            // partial — show whatever we have plus the warning
-            renderCart(data);
+            const hasAnything =
+              data.cart.essentials?.length ||
+              data.cart.recommended?.length ||
+              data.cart.premiumSuggestions?.length;
+            if (hasAnything || data.status === "partial_success" || data.status === "failed") {
+              renderCart(data);
+            }
           }
         } catch (e) {
           typing.remove();
@@ -427,13 +434,6 @@
         b.addEventListener("click", () => send(b.dataset.q));
       });
       resetBtn.addEventListener("click", async () => {
-        if (sessionId) {
-          await fetch("/api/session/reset", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId }),
-          });
-        }
         sessionStorage.removeItem("sid");
         sessionId = "";
         log.innerHTML = "";

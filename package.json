@@ -23,11 +23,14 @@
     "@google/genai": "^0.7.0",
     "@prisma/client": "^5.22.0",
     "dotenv": "^16.4.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "redis": "^6.0.0",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.9.0",
+    "@types/swagger-ui-express": "^4.1.8",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"

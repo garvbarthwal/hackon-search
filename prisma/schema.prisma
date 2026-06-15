@@ -88,3 +88,22 @@ model Brand {
 
   @@index([brandScore])
 }
+
+/// v5 — Per-API-request audit log. One row per call to /v1/cart/plan or
+/// /v1/cart/chat. Supports GET /v1/cart/status/:requestId.
+/// `response` is the full frozen CartResponse JSON for replay.
+model CartRequestLog {
+  requestId   String   @id
+  query       String
+  queryType   String
+  status      String
+  coverage    Float
+  sessionId   String?
+  response    Json
+  latencyMs   Int
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("CartRequestLog")
+}
