@@ -17,7 +17,7 @@ import { prisma } from "../lib/db.js";
 type Req = { name: string; hints?: string[]; nameMatch?: string[] };
 type Entry = {
   slug: string;
-  type: "mission" | "dish";
+  type: "mission" | "dish" | "festival";
   aliases: string[];
   essentials: Req[];
   recommended: Req[];
@@ -332,6 +332,87 @@ const ENTRIES: Entry[] = [
     premium: [
       { name: "Cashews", hints: ["Dry Fruits & Nuts"], nameMatch: ["cashew", "kaju"] },
       { name: "Kasuri Methi", hints: ["Whole Spices & Seasonings"], nameMatch: ["kasuri methi"] },
+    ],
+  },
+
+  // ─── Festivals ─────────────────────────────────────────────────────────
+  {
+    slug: "diwali",
+    type: "festival",
+    aliases: ["diwali", "diwali decorations", "diwali essentials", "diwali shopping", "deepavali"],
+    essentials: [
+      { name: "Diyas & Candles", hints: ["Festive Needs", "Pooja & Worship Needs"], nameMatch: ["diya", "candle"] },
+      { name: "Rangoli", hints: ["Festive Needs"], nameMatch: ["rangoli"] },
+      { name: "Pooja Items", hints: ["Pooja & Worship Needs"], nameMatch: ["pooja", "puja", "lakshmi", "ganesh"] },
+    ],
+    recommended: [
+      { name: "Lights & Toran", hints: ["Festive Needs"], nameMatch: ["light", "toran", "lantern"] },
+      { name: "Sweets & Mithai", hints: ["Indian Mithai"] },
+    ],
+    premium: [
+      { name: "Premium Gift Hampers", hints: ["Festive Needs"], nameMatch: ["hamper", "gift"] },
+      { name: "Premium Chocolates", hints: ["Premium Chocolates"] },
+    ],
+  },
+  {
+    slug: "christmas",
+    type: "festival",
+    aliases: ["christmas", "xmas", "christmas decorations", "christmas tree"],
+    essentials: [
+      { name: "Christmas Tree & Decor", hints: ["Festive Needs"], nameMatch: ["christmas", "xmas", "santa"] },
+    ],
+    recommended: [
+      { name: "Christmas Sweets", hints: ["Premium Chocolates", "Chocolates"] },
+    ],
+    premium: [
+      { name: "Christmas Gift Hampers", hints: ["Festive Needs"], nameMatch: ["christmas", "santa"] },
+    ],
+  },
+  {
+    slug: "holi",
+    type: "festival",
+    aliases: ["holi", "holi colors", "holi gulal", "festival of colors"],
+    essentials: [
+      { name: "Gulal & Colors", hints: ["Festive Needs"], nameMatch: ["gulal", "holi", "color"] },
+    ],
+    recommended: [
+      { name: "Sweets", hints: ["Indian Mithai"] },
+      { name: "Snacks", hints: ["Namkeens"] },
+    ],
+    premium: [
+      { name: "Thandai Mix", hints: ["Drink Mixes", "Powders & Pastes"], nameMatch: ["thandai"] },
+    ],
+  },
+  {
+    slug: "eid",
+    type: "festival",
+    aliases: ["eid", "eid essentials", "ramadan", "ramzan", "eid mubarak"],
+    essentials: [
+      { name: "Eid Decor", hints: ["Festive Needs"], nameMatch: ["eid", "ramadan", "ramzan"] },
+    ],
+    recommended: [
+      { name: "Sevaiyan", hints: ["Noodles & Vermicelli"], nameMatch: ["seviyan", "vermicelli"] },
+      { name: "Dates", hints: ["Dates & Seeds"], nameMatch: ["date"] },
+      { name: "Sweets", hints: ["Indian Mithai"] },
+    ],
+    premium: [
+      { name: "Dry Fruits", hints: ["Dry Fruits & Nuts"] },
+    ],
+  },
+  {
+    slug: "raksha_bandhan",
+    type: "festival",
+    aliases: ["raksha bandhan", "rakhi", "rakhi for brother", "raksha bandhan gifts"],
+    essentials: [
+      { name: "Rakhi", hints: ["Festive Needs"], nameMatch: ["rakhi", "raksha"] },
+    ],
+    recommended: [
+      { name: "Sweets & Mithai", hints: ["Indian Mithai"] },
+      { name: "Chocolates", hints: ["Chocolates"] },
+    ],
+    premium: [
+      { name: "Premium Gift Hampers", hints: ["Festive Needs"], nameMatch: ["hamper", "gift"] },
+      { name: "Dry Fruits", hints: ["Dry Fruits & Nuts"] },
     ],
   },
 ];

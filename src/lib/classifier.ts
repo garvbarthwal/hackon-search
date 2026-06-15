@@ -20,6 +20,7 @@ export type QueryType =
   | "ingredient"
   | "dish"
   | "mission"
+  | "festival"
   | "category"
   | "unknown";
 
@@ -43,7 +44,7 @@ const SCHEMA = {
   properties: {
     queryType: {
       type: "string",
-      enum: ["product", "brand", "ingredient", "dish", "mission", "category", "unknown"],
+      enum: ["product", "brand", "ingredient", "dish", "mission", "festival", "category", "unknown"],
     },
     confidence: { type: "number", description: "0..1 confidence" },
     slug: { type: "string", description: "snake_case slug for dish/mission, '' otherwise" },
@@ -78,6 +79,7 @@ const SYSTEM = (subcatList: string, knownSlugs: string, knownBrands: string) =>
 - ingredient: a single edible item, fresh or staple ("Lemon", "Tomato", "Milk", "Paneer", "Onion")
 - dish:       a prepared meal/recipe ("Pav Bhaji", "Biryani", "Maggi" — wait, Maggi is a product not a dish; "Dosa", "Paneer Butter Masala")
 - mission:    an event/occasion/use-case ("Movie night", "Tea party", "Birthday party", "Hostel starter pack")
+- festival:   a specific named festival/religious occasion that has its own decor and food ("Diwali decorations", "Christmas tree", "Holi colors", "Eid sweets", "Rakhi for brother"). Set 'slug' to the festival's slug (diwali, christmas, holi, eid, raksha_bandhan).
 - category:   user named one or more product categories ("Baby food and diapers", "Chips and chocolates", "Snacks for the week")
 - unknown:    nothing else fits
 
@@ -87,8 +89,10 @@ CRITICAL DISAMBIGUATION RULES:
 2. Single fresh-produce / pantry words → ingredient (Lemon, Tomato, Onion, Sugar, Salt, Milk).
    These must NEVER be classified as 'unknown'.
 3. Brand alone (no product name after) → brand (Amul, Britannia, Lay's).
-4. Multi-word event language → mission (Movie night, Tea party, Diwali essentials).
-5. Multi-word recipe language → dish (Pav Bhaji, Chicken Biryani).
+4. Festival names with "decoration", "essentials", "supplies", or any festival on its own → festival.
+   "Diwali decorations", "Christmas", "Holi", "Eid", "Rakhi" → festival.
+5. Multi-word event language without festival name → mission (Movie night, Tea party).
+6. Multi-word recipe language → dish (Pav Bhaji, Chicken Biryani).
 
 Confidence scale:
 - 1.0 = obvious (single dictionary word, exact known brand)

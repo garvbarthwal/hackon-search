@@ -20,6 +20,7 @@ model Product {
   subCategory   String
   category      String
   brand         String?
+  domain        String?
   inStock       Boolean  @default(true)
   syntheticText String?
   // embedding vector(768) — managed via raw SQL
@@ -28,6 +29,7 @@ model Product {
   @@index([subCategory])
   @@index([category])
   @@index([brand])
+  @@index([domain])
 }
 
 /// Sub-category vocabulary with semantic descriptions and embeddings.

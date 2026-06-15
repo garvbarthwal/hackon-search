@@ -29,6 +29,8 @@ export type Requirement = {
   brand?: string;
   /** required|recommended|optional|substitutable — drives validator behavior. */
   priority: RequirementType;
+  /** Optional planner override of the constraint engine's domain allow-list. */
+  allowedDomains?: string[];
 };
 
 export type PlannerOutput = {
@@ -136,6 +138,7 @@ REQUIREMENT SHAPES BY queryType:
 - category:   one essential per named category with type='subcategory'. hints = exact sub-category names from AVAILABLE list.
 - dish:       full essentials list — actual ingredients to MAKE the dish. Pav Bhaji needs Pav (not generic bread). Use type='name' for sub-cat + nameMatch combos.
 - mission:    full essentials list — items needed to fulfil the goal. Tea party = Tea + Milk + Sugar.
+- festival:   full essentials list scoped to the named festival. Diwali = Diyas + Rangoli + Pooja items. Christmas = Tree + Decor. NEVER mix festivals — Diwali requirements never include Christmas keywords. Always set missionSlug to the festival's slug (diwali, christmas, holi, eid, raksha_bandhan).
 
 CLARIFICATION POLICY:
 - ${forceReady ? "DO NOT ASK QUESTIONS. Set status='ready' and produce best-effort requirements." : `Set status='clarifying' ONLY if confidence < ${CONFIDENCE_THRESHOLD} AND essential info is missing. Otherwise status='ready'.`}
@@ -240,7 +243,7 @@ export async function aliasFastPath(
   userMessage: string,
 ): Promise<PlannerOutput | null> {
   if (history.length > 0) return null;
-  if (cls.queryType !== "mission" && cls.queryType !== "dish") return null;
+  if (cls.queryType !== "mission" && cls.queryType !== "dish" && cls.queryType !== "festival") return null;
 
   const known = await prisma.missionKB.findMany();
   const q = userMessage.toLowerCase().trim();

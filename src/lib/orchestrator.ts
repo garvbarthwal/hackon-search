@@ -9,11 +9,13 @@
  * resolving — that round-trips through the chat UI.
  */
 import { classify } from "./classifier.js";
-import { plan, aliasFastPath, type ChatMessage, type PlannerOutput } from "./planner.js";
+import { plan, aliasFastPath, type ChatMessage, type PlannerOutput, type Requirement } from "./planner.js";
 import { resolveAll, type ResolvedRequirement } from "./resolver.js";
 import { computeCoverage, type CoverageReport, COVERAGE_THRESHOLD } from "./coverage.js";
 import { substitute, applySubstitutions, type Substitution } from "./substitution.js";
 import { composeSmartCart, type SmartCart } from "./cart.js";
+import { audit, type AuditorVerdict } from "./auditor.js";
+import { constraintFor, festivalFromSlug, type Constraint } from "./constraints.js";
 
 export type ChatTurnResponse = {
   sessionId: string;
@@ -22,6 +24,7 @@ export type ChatTurnResponse = {
   questions: string[];
   cart?: SmartCart;
   coverage?: CoverageReport;
+  auditor?: AuditorVerdict;
   trace: DebugTrace;
 };
 
@@ -32,14 +35,18 @@ export type DebugTrace = {
   plannerStatus: string;
   plannerConfidence: number;
   missionSlug: string | null;
+  festival: string | null;
   kbHit: boolean;
   aliasFastPath: boolean;
   cachedClassifier: boolean;
   requirements: PlannerOutput["requirements"] | null;
-  resolverSteps: { requirement: string; resolverPath: string; candidates: number }[];
+  resolverSteps: { requirement: string; resolverPath: string; candidates: number; constraintFiltered: number }[];
+  constraints: { requirement: string; allowed: string[]; blocked: string[]; reason: string }[];
   coverage: number | null;
   unfulfilled: string[];
   substitutions: { requirement: string; picks: { name: string; reason: string }[] }[];
+  auditor: AuditorVerdict | null;
+  retries: number;
   retrievedProducts: number;
   selectedProducts: number;
   notes: string[];
@@ -87,14 +94,18 @@ export async function processTurn(args: {
         plannerStatus: planner.status,
         plannerConfidence: planner.confidence,
         missionSlug: planner.missionSlug,
+        festival: null,
         kbHit: false,
         aliasFastPath: usedAlias,
         cachedClassifier: false,
         requirements: planner.requirements,
         resolverSteps: [],
+        constraints: [],
         coverage: null,
         unfulfilled: [],
         substitutions: [],
+        auditor: null,
+        retries: 0,
         retrievedProducts: 0,
         selectedProducts: 0,
         notes,
@@ -102,11 +113,30 @@ export async function processTurn(args: {
     };
   }
 
-  // ── Stage 3: resolve all requirements ──────────────────────────────
+  // ── Build per-requirement constraints ──────────────────────────────
+  const festival = festivalFromSlug(planner.missionSlug ?? cls.slug);
   const reqs = planner.requirements;
-  const essentialsResolved = await resolveAll(reqs.essentials);
-  const recommendedResolved = await resolveAll(reqs.recommended);
-  const premiumResolved = await resolveAll(reqs.premium);
+  const buildConstraint = (req: Requirement): Constraint =>
+    constraintFor(req, cls.queryType, festival);
+  const constraintTrace: DebugTrace["constraints"] = [
+    ...reqs.essentials,
+    ...reqs.recommended,
+    ...reqs.premium,
+  ].map((r) => {
+    const c = buildConstraint(r);
+    return {
+      requirement: r.name,
+      allowed: c.allowed,
+      blocked: c.blocked,
+      reason: c.reason,
+    };
+  });
+  if (festival) notes.push(`festival mode: ${festival}`);
+
+  // ── Stage 3: resolve all requirements ──────────────────────────────
+  const essentialsResolved = await resolveAll(reqs.essentials, buildConstraint);
+  const recommendedResolved = await resolveAll(reqs.recommended, buildConstraint);
+  const premiumResolved = await resolveAll(reqs.premium, buildConstraint);
 
   // ── Stage 4: coverage ──────────────────────────────────────────────
   let coverage = computeCoverage(essentialsResolved);
@@ -134,17 +164,71 @@ export async function processTurn(args: {
     }
   }
 
-  // ── Stage 6: compose ───────────────────────────────────────────────
-  const essentialSubCats = augmentedEssentials
-    .flatMap((r) => r.candidates.slice(0, 1).map((p) => p.subCategory))
-    .filter(Boolean);
+  // ── Stage 6: compose + audit + retry ───────────────────────────────
+  const banned = new Set<string>();
+  let cart!: SmartCart;
+  let auditorVerdict: AuditorVerdict = { valid: true, remove: [], reasons: [], summary: "" };
+  let retries = 0;
+  const MAX_RETRIES = 2;
 
-  const cart = composeSmartCart(
-    augmentedEssentials,
-    recommendedResolved,
-    premiumResolved,
-    essentialSubCats,
-  );
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const stripBanned = (rs: ResolvedRequirement[]): ResolvedRequirement[] =>
+      rs.map((r) => ({
+        ...r,
+        candidates: r.candidates.filter((c) => !banned.has(c.id)),
+      }));
+
+    const ess = stripBanned(augmentedEssentials);
+    const rec = stripBanned(recommendedResolved);
+    const prem = stripBanned(premiumResolved);
+
+    const essentialSubCats = ess
+      .flatMap((r) => r.candidates.slice(0, 1).map((p) => p.subCategory))
+      .filter(Boolean);
+
+    cart = composeSmartCart(ess, rec, prem, essentialSubCats);
+
+    const auditInput = {
+      query: message,
+      queryType: cls.queryType,
+      missionSlug: planner.missionSlug,
+      requirements: reqs,
+      cart: {
+        essentials: cart.essentials.map((p) => ({
+          productId: p.productId, name: p.name, requirement: p.requirement,
+          subCategory: p.subCategory, brand: p.brand,
+        })),
+        recommended: cart.recommended.map((p) => ({
+          productId: p.productId, name: p.name, requirement: p.requirement,
+          subCategory: p.subCategory, brand: p.brand,
+        })),
+        premiumSuggestions: cart.premiumSuggestions.map((p) => ({
+          productId: p.productId, name: p.name, requirement: p.requirement,
+          subCategory: p.subCategory, brand: p.brand,
+        })),
+      },
+    };
+    auditorVerdict = await audit(auditInput);
+
+    if (auditorVerdict.valid || auditorVerdict.remove.length === 0) {
+      notes.push(
+        `auditor: pass ${attempt === 0 ? "(first pass)" : `(after ${attempt} retries)`}`,
+      );
+      break;
+    }
+
+    notes.push(
+      `auditor: removed ${auditorVerdict.remove.length} — ${auditorVerdict.summary.slice(0, 80)}`,
+    );
+
+    if (attempt === MAX_RETRIES) {
+      notes.push(`auditor: max retries reached, returning best-effort cart`);
+      break;
+    }
+
+    for (const id of auditorVerdict.remove) banned.add(id);
+    retries = attempt + 1;
+  }
 
   // ── Stage 7: build response ────────────────────────────────────────
   const totalRetrieved =
@@ -174,6 +258,7 @@ export async function processTurn(args: {
     plannerStatus: planner.status,
     plannerConfidence: planner.confidence,
     missionSlug: planner.missionSlug,
+    festival,
     kbHit: false,
     aliasFastPath: usedAlias,
     cachedClassifier: false,
@@ -183,24 +268,30 @@ export async function processTurn(args: {
         requirement: r.requirement.name,
         resolverPath: r.resolverPath,
         candidates: r.candidates.length,
+        constraintFiltered: r.constraintFiltered ?? 0,
       })),
       ...recommendedResolved.map((r) => ({
         requirement: `[recommended] ${r.requirement.name}`,
         resolverPath: r.resolverPath,
         candidates: r.candidates.length,
+        constraintFiltered: r.constraintFiltered ?? 0,
       })),
       ...premiumResolved.map((r) => ({
         requirement: `[premium] ${r.requirement.name}`,
         resolverPath: r.resolverPath,
         candidates: r.candidates.length,
+        constraintFiltered: r.constraintFiltered ?? 0,
       })),
     ],
+    constraints: constraintTrace,
     coverage: coverage.coverage,
     unfulfilled: coverage.unfulfilled.map((u) => u.name),
     substitutions: substitutions.map((s) => ({
       requirement: s.requirement,
       picks: s.picks.map((p) => ({ name: p.product.name, reason: p.reason })),
     })),
+    auditor: auditorVerdict,
+    retries,
     retrievedProducts: totalRetrieved,
     selectedProducts: totalSelected,
     notes,
@@ -213,6 +304,7 @@ export async function processTurn(args: {
     questions: [],
     cart,
     coverage,
+    auditor: auditorVerdict,
     trace,
   };
 }

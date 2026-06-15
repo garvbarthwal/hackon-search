@@ -13,6 +13,7 @@
     "seed:missions": "tsx src/scripts/seedMissions.ts",
     "embed:products": "tsx src/scripts/embedProducts.ts",
     "extract:brands": "tsx src/scripts/extractBrands.ts",
+    "extract:domains": "tsx src/scripts/extractDomains.ts",
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "eval": "tsx src/scripts/eval.ts"

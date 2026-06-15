@@ -16,6 +16,7 @@
 import { prisma } from "./db.js";
 import { embedOne, toPgVector } from "./gemini.js";
 import type { Requirement } from "./planner.js";
+import { type Constraint, passesConstraint } from "./constraints.js";
 
 export type ResolverPath =
   | "exact_product"
@@ -37,6 +38,7 @@ export type RankedProduct = {
   subCategory: string;
   category: string;
   brand: string | null;
+  domain: string | null;
   inStock: boolean;
   score: number;
   resolverPath: ResolverPath;
@@ -47,6 +49,8 @@ export type ResolvedRequirement = {
   requirement: Requirement;
   candidates: RankedProduct[];
   resolverPath: ResolverPath;
+  /** Number of candidates the constraint engine filtered out before ranking. */
+  constraintFiltered?: number;
 };
 
 const TOP_CANDIDATES = 8;
@@ -62,8 +66,11 @@ type RawProduct = {
   subCategory: string;
   category: string;
   brand: string | null;
+  domain: string | null;
   inStock: boolean;
 };
+
+const NO_CONSTRAINT: Constraint = { allowed: [], blocked: [], reason: "(none)" };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ranking
@@ -109,27 +116,45 @@ async function rankProducts(
     .sort((a, b) => b.score - a.score);
 }
 
+/** Filter products through the constraint before ranking. */
+function applyConstraint<T extends { name: string; domain: string | null }>(
+  products: T[],
+  constraint: Constraint,
+): { kept: T[]; filtered: number } {
+  if (constraint.allowed.length === 0 && constraint.blocked.length === 0 && !constraint.festival) {
+    return { kept: products, filtered: 0 };
+  }
+  const kept = products.filter((p) => passesConstraint(p, constraint));
+  return { kept, filtered: products.length - kept.length };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-tier search
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function searchExactProduct(req: Requirement): Promise<RankedProduct[]> {
+async function searchExactProduct(
+  req: Requirement,
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
   const keywords = req.nameMatch ?? [];
-  if (keywords.length === 0) return [];
+  if (keywords.length === 0) return { ranked: [], filtered: 0 };
   const products = await prisma.product.findMany({
     where: {
       inStock: true,
       OR: keywords.map((kw) => ({ name: { contains: kw, mode: "insensitive" as const } })),
     },
-    take: 100,
+    take: 200,
   });
 
   // Diaper hard filter (carry over from v2 — never substitute adult diapers).
-  const filtered = req.name.toLowerCase().includes("diaper")
+  let filtered: typeof products = req.name.toLowerCase().includes("diaper")
     ? products.filter((p) => !/adult|elderly|incontinence/i.test(p.name))
     : products;
 
-  if (filtered.length === 0) return [];
+  const constrained = applyConstraint(filtered, constraint);
+  filtered = constrained.kept;
+
+  if (filtered.length === 0) return { ranked: [], filtered: constrained.filtered };
 
   // Match-bonus: full-keyword hit at start of name beats mid-name hit.
   const bonus = (p: RawProduct): number => {
@@ -143,61 +168,87 @@ async function searchExactProduct(req: Requirement): Promise<RankedProduct[]> {
     return b;
   };
 
-  return rankProducts(filtered, "exact_product", bonus);
+  const ranked = await rankProducts(filtered, "exact_product", bonus);
+  return { ranked, filtered: constrained.filtered };
 }
 
-async function searchBrand(brand: string): Promise<RankedProduct[]> {
+async function searchBrand(
+  brand: string,
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
   // Exact brand match first.
   const exact = await prisma.product.findMany({
     where: { brand: { equals: brand, mode: "insensitive" }, inStock: true },
-    take: 100,
+    take: 200,
   });
   if (exact.length > 0) {
-    return rankProducts(exact, "brand", () => 0.2);
+    const c = applyConstraint(exact, constraint);
+    if (c.kept.length > 0) {
+      return { ranked: await rankProducts(c.kept, "brand", () => 0.2), filtered: c.filtered };
+    }
   }
   // Trigram match for brand misspellings.
   type Row = RawProduct;
   const rows = await prisma.$queryRaw<Row[]>`
     SELECT id, name, image, price, rating, reviews, quantity,
-           "subCategory", category, brand, "inStock"
+           "subCategory", category, brand, domain, "inStock"
     FROM "Product"
     WHERE brand IS NOT NULL AND brand % ${brand}
       AND "inStock" = true
     ORDER BY similarity(brand, ${brand}) DESC
-    LIMIT 100
+    LIMIT 200
   `;
-  if (rows.length > 0) return rankProducts(rows, "brand", () => 0.1);
-  return [];
+  if (rows.length > 0) {
+    const c = applyConstraint(rows, constraint);
+    if (c.kept.length > 0) {
+      return { ranked: await rankProducts(c.kept, "brand", () => 0.1), filtered: c.filtered };
+    }
+    return { ranked: [], filtered: c.filtered };
+  }
+  return { ranked: [], filtered: 0 };
 }
 
-async function searchSubcategory(hints: string[]): Promise<RankedProduct[]> {
-  if (hints.length === 0) return [];
+async function searchSubcategory(
+  hints: string[],
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
+  if (hints.length === 0) return { ranked: [], filtered: 0 };
   const products = await prisma.product.findMany({
     where: { subCategory: { in: hints }, inStock: true },
-    take: 200,
+    take: 400,
   });
-  if (products.length === 0) return [];
-  return rankProducts(products, "subcategory");
+  if (products.length === 0) return { ranked: [], filtered: 0 };
+  const c = applyConstraint(products, constraint);
+  if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "subcategory"), filtered: c.filtered };
 }
 
-async function searchCategory(hints: string[]): Promise<RankedProduct[]> {
-  if (hints.length === 0) return [];
+async function searchCategory(
+  hints: string[],
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
+  if (hints.length === 0) return { ranked: [], filtered: 0 };
   // Find parent categories of the hinted sub-categories, then broaden.
   const subs = await prisma.subCategory.findMany({
     where: { name: { in: hints } },
     select: { category: true },
   });
   const cats = [...new Set(subs.map((s) => s.category))];
-  if (cats.length === 0) return [];
+  if (cats.length === 0) return { ranked: [], filtered: 0 };
   const products = await prisma.product.findMany({
     where: { category: { in: cats }, inStock: true },
-    take: 200,
+    take: 400,
   });
-  if (products.length === 0) return [];
-  return rankProducts(products, "category");
+  if (products.length === 0) return { ranked: [], filtered: 0 };
+  const c = applyConstraint(products, constraint);
+  if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "category"), filtered: c.filtered };
 }
 
-async function searchSynonym(req: Requirement): Promise<RankedProduct[]> {
+async function searchSynonym(
+  req: Requirement,
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
   const target = req.name;
   type Row = { name: string };
   const rows = await prisma.$queryRaw<Row[]>`
@@ -206,16 +257,21 @@ async function searchSynonym(req: Requirement): Promise<RankedProduct[]> {
     ORDER BY similarity(name, ${target}) DESC
     LIMIT 5
   `;
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { ranked: [], filtered: 0 };
   const products = await prisma.product.findMany({
     where: { subCategory: { in: rows.map((r) => r.name) }, inStock: true },
-    take: 100,
+    take: 200,
   });
-  if (products.length === 0) return [];
-  return rankProducts(products, "synonym");
+  if (products.length === 0) return { ranked: [], filtered: 0 };
+  const c = applyConstraint(products, constraint);
+  if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
+  return { ranked: await rankProducts(c.kept, "synonym"), filtered: c.filtered };
 }
 
-async function searchEmbedding(req: Requirement): Promise<RankedProduct[]> {
+async function searchEmbedding(
+  req: Requirement,
+  constraint: Constraint,
+): Promise<{ ranked: RankedProduct[]; filtered: number }> {
   try {
     const text = [req.name, ...(req.hints ?? []), ...(req.nameMatch ?? [])]
       .filter(Boolean)
@@ -226,20 +282,23 @@ async function searchEmbedding(req: Requirement): Promise<RankedProduct[]> {
     const rows = await prisma.$queryRawUnsafe<Row[]>(
       `
       SELECT id, name, image, price, rating, reviews, quantity,
-             "subCategory", category, brand, "inStock",
+             "subCategory", category, brand, domain, "inStock",
              (embedding <=> $1::vector) AS distance
       FROM "Product"
       WHERE embedding IS NOT NULL AND "inStock" = true
       ORDER BY embedding <=> $1::vector
-      LIMIT 25
+      LIMIT 50
       `,
       lit,
     );
-    if (rows.length > 0) return rankProducts(rows, "embedding");
+    if (rows.length === 0) return { ranked: [], filtered: 0 };
+    const c = applyConstraint(rows, constraint);
+    if (c.kept.length === 0) return { ranked: [], filtered: c.filtered };
+    return { ranked: await rankProducts(c.kept, "embedding"), filtered: c.filtered };
   } catch {
     // embedding quota / unavailable
   }
-  return [];
+  return { ranked: [], filtered: 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,7 +309,11 @@ async function searchEmbedding(req: Requirement): Promise<RankedProduct[]> {
  * Resolve a single requirement using the strict tier order.
  * The first tier that returns ANY products wins. Lower tiers are not consulted.
  */
-export async function resolveRequirement(req: Requirement): Promise<ResolvedRequirement> {
+export async function resolveRequirement(
+  req: Requirement,
+  constraint: Constraint = NO_CONSTRAINT,
+): Promise<ResolvedRequirement> {
+  let totalFiltered = 0;
   // Tier 1: exact_product — only when nameMatch is given AND type is exact_product or name.
   if (
     (req.type === "exact_product" || req.type === "name" || req.type === "ingredient") &&
@@ -267,11 +330,14 @@ export async function resolveRequirement(req: Requirement): Promise<ResolvedRequ
             name: { contains: kw, mode: "insensitive" as const },
           })),
         },
-        take: 100,
+        take: 200,
       });
-      const filtered = req.name.toLowerCase().includes("diaper")
+      let filtered: typeof products = req.name.toLowerCase().includes("diaper")
         ? products.filter((p) => !/adult|elderly|incontinence/i.test(p.name))
         : products;
+      const c = applyConstraint(filtered, constraint);
+      filtered = c.kept;
+      totalFiltered += c.filtered;
       if (filtered.length > 0) {
         const ranked = await rankProducts(filtered, "exact_product", (p) => {
           const n = p.name.toLowerCase();
@@ -285,88 +351,104 @@ export async function resolveRequirement(req: Requirement): Promise<ResolvedRequ
           requirement: req,
           candidates: ranked.slice(0, TOP_CANDIDATES),
           resolverPath: "exact_product",
+          constraintFiltered: totalFiltered,
         };
       }
     }
 
     // Whole-catalog name match.
-    const exact = await searchExactProduct(req);
-    if (exact.length > 0) {
+    const exact = await searchExactProduct(req, constraint);
+    totalFiltered += exact.filtered;
+    if (exact.ranked.length > 0) {
       return {
         requirement: req,
-        candidates: exact.slice(0, TOP_CANDIDATES),
+        candidates: exact.ranked.slice(0, TOP_CANDIDATES),
         resolverPath: "exact_product",
+        constraintFiltered: totalFiltered,
       };
     }
 
     // CRITICAL: when nameMatch was specified and missed, do NOT substitute via
     // category/embedding. Return empty so coverage validator surfaces the gap.
     // This is the v2/v3 invariant: Atta never replaces Pav, Ghee never replaces Diapers.
-    return { requirement: req, candidates: [], resolverPath: "none" };
+    return { requirement: req, candidates: [], resolverPath: "none", constraintFiltered: totalFiltered };
   }
 
   // Tier 2: brand match.
   if (req.type === "brand" && req.brand) {
-    const products = await searchBrand(req.brand);
-    if (products.length > 0) {
+    const r = await searchBrand(req.brand, constraint);
+    totalFiltered += r.filtered;
+    if (r.ranked.length > 0) {
       return {
         requirement: req,
-        candidates: products.slice(0, TOP_CANDIDATES),
+        candidates: r.ranked.slice(0, TOP_CANDIDATES),
         resolverPath: "brand",
+        constraintFiltered: totalFiltered,
       };
     }
     // Even on miss, don't fall through — brand was the user's specific ask.
-    return { requirement: req, candidates: [], resolverPath: "none" };
+    return { requirement: req, candidates: [], resolverPath: "none", constraintFiltered: totalFiltered };
   }
 
   // Tier 3: exact sub-category match (hint-driven, no nameMatch).
   if (req.hints && req.hints.length > 0) {
-    const products = await searchSubcategory(req.hints);
-    if (products.length > 0) {
+    const r = await searchSubcategory(req.hints, constraint);
+    totalFiltered += r.filtered;
+    if (r.ranked.length > 0) {
       return {
         requirement: req,
-        candidates: products.slice(0, TOP_CANDIDATES),
+        candidates: r.ranked.slice(0, TOP_CANDIDATES),
         resolverPath: "subcategory",
+        constraintFiltered: totalFiltered,
       };
     }
 
     // Tier 4: parent category broaden.
-    const cat = await searchCategory(req.hints);
-    if (cat.length > 0) {
+    const cat = await searchCategory(req.hints, constraint);
+    totalFiltered += cat.filtered;
+    if (cat.ranked.length > 0) {
       return {
         requirement: req,
-        candidates: cat.slice(0, TOP_CANDIDATES),
+        candidates: cat.ranked.slice(0, TOP_CANDIDATES),
         resolverPath: "category",
+        constraintFiltered: totalFiltered,
       };
     }
   }
 
   // Tier 5: synonym match on sub-category name.
-  const syn = await searchSynonym(req);
-  if (syn.length > 0) {
+  const syn = await searchSynonym(req, constraint);
+  totalFiltered += syn.filtered;
+  if (syn.ranked.length > 0) {
     return {
       requirement: req,
-      candidates: syn.slice(0, TOP_CANDIDATES),
+      candidates: syn.ranked.slice(0, TOP_CANDIDATES),
       resolverPath: "synonym",
+      constraintFiltered: totalFiltered,
     };
   }
 
   // Tier 6: embedding fallback.
-  const emb = await searchEmbedding(req);
-  if (emb.length > 0) {
+  const emb = await searchEmbedding(req, constraint);
+  totalFiltered += emb.filtered;
+  if (emb.ranked.length > 0) {
     return {
       requirement: req,
-      candidates: emb.slice(0, TOP_CANDIDATES),
+      candidates: emb.ranked.slice(0, TOP_CANDIDATES),
       resolverPath: "embedding",
+      constraintFiltered: totalFiltered,
     };
   }
 
-  return { requirement: req, candidates: [], resolverPath: "none" };
+  return { requirement: req, candidates: [], resolverPath: "none", constraintFiltered: totalFiltered };
 }
 
-export async function resolveAll(reqs: Requirement[]): Promise<ResolvedRequirement[]> {
+export async function resolveAll(
+  reqs: Requirement[],
+  constraintFor: (req: Requirement) => Constraint = () => NO_CONSTRAINT,
+): Promise<ResolvedRequirement[]> {
   const out: ResolvedRequirement[] = [];
-  for (const r of reqs) out.push(await resolveRequirement(r));
+  for (const r of reqs) out.push(await resolveRequirement(r, constraintFor(r)));
   return out;
 }
 
@@ -374,14 +456,20 @@ export async function resolveAll(reqs: Requirement[]): Promise<ResolvedRequireme
  * Broaden a requirement that came back empty. Strips nameMatch/brand and uses
  * hints only. Returns empty if there are no hints to broaden into.
  */
-export async function resolveBroader(req: Requirement): Promise<ResolvedRequirement> {
+export async function resolveBroader(
+  req: Requirement,
+  constraint: Constraint = NO_CONSTRAINT,
+): Promise<ResolvedRequirement> {
   if (!req.hints || req.hints.length === 0) {
     return { requirement: req, candidates: [], resolverPath: "none" };
   }
-  return resolveRequirement({
-    type: "subcategory",
-    name: req.name,
-    hints: req.hints,
-    priority: req.priority,
-  });
+  return resolveRequirement(
+    {
+      type: "subcategory",
+      name: req.name,
+      hints: req.hints,
+      priority: req.priority,
+    },
+    constraint,
+  );
 }

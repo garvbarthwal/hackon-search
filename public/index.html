@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SmartCart v3.5</title>
+    <title>SmartCart v4.5</title>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -208,7 +208,7 @@
   </head>
   <body>
     <header>
-      <h1>SmartCart v3.5</h1>
+      <h1>SmartCart v4.5</h1>
       <button class="reset" id="reset" title="Start a new session">New chat</button>
     </header>
     <main>
@@ -219,6 +219,8 @@
           <button data-q="Lemon">Lemon</button>
           <button data-q="Amul">Amul</button>
           <button data-q="Baby Food">Baby Food</button>
+          <button data-q="Diwali Decorations">Diwali</button>
+          <button data-q="Christmas">Christmas</button>
           <button data-q="Tea Party">Tea Party</button>
           <button data-q="Pav Bhaji">Pav Bhaji</button>
           <button data-q="Movie Night">Movie Night</button>
@@ -357,11 +359,21 @@
             <div>
               <strong>Type:</strong> ${escape(t.queryType || "?")}
               ${t.missionSlug ? `&nbsp;·&nbsp; <strong>Plan:</strong> ${escape(t.missionSlug)}` : ""}
+              ${t.festival ? `&nbsp;·&nbsp; <strong>Festival:</strong> ${escape(t.festival)}` : ""}
               ${cov.coverage !== undefined ? `&nbsp;·&nbsp; <strong>Coverage:</strong> ${(cov.coverage * 100).toFixed(0)}%` : ""}
               ${statusBadge}
             </div>
             ${t.unfulfilled && t.unfulfilled.length ? `<div style="margin-top:6px;color:#92400e;"><strong>Unfulfilled:</strong> ${t.unfulfilled.map(escape).join(", ")}</div>` : ""}
             ${t.substitutions && t.substitutions.length ? `<div style="margin-top:4px;font-size:11px;color:#92400e;">${t.substitutions.map(s => `${escape(s.requirement)} → ${escape(s.picks[0]?.name || "")}`).join(" · ")}</div>` : ""}
+            ${data.auditor && data.auditor.remove && data.auditor.remove.length ? `
+              <div style="margin-top:8px;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11px;color:#991b1b;">
+                <strong>Auditor removed ${data.auditor.remove.length}${t.retries ? ` (${t.retries} retr${t.retries===1?'y':'ies'})` : ""}:</strong>
+                <div style="margin-top:4px;color:#7f1d1d;">${escape(data.auditor.summary || "")}</div>
+                ${(data.auditor.reasons || []).slice(0, 4).map(r => `<div style="margin-top:2px;">• ${escape(r.reason)}</div>`).join("")}
+              </div>` : data.auditor && data.auditor.summary ? `
+              <div style="margin-top:8px;font-size:11px;color:#065f46;">
+                <strong>Auditor:</strong> passed${t.retries ? ` after ${t.retries} retr${t.retries===1?'y':'ies'}` : ""}.
+              </div>` : ""}
             <details style="margin-top:8px;">
               <summary>Debug trace</summary>
               <pre>${escape(JSON.stringify({
@@ -370,10 +382,14 @@
                 plannerStatus: t.plannerStatus,
                 plannerConfidence: t.plannerConfidence,
                 aliasFastPath: t.aliasFastPath,
+                festival: t.festival,
                 resolverSteps: t.resolverSteps,
+                constraints: t.constraints,
                 coverage: t.coverage,
                 unfulfilled: t.unfulfilled,
                 substitutions: t.substitutions,
+                auditor: t.auditor,
+                retries: t.retries,
                 retrievedProducts: t.retrievedProducts,
                 selectedProducts: t.selectedProducts,
                 notes: t.notes,
